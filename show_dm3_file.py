@@ -146,6 +146,7 @@ def show_image(filepath, limits=None):
 
     root.bind_all("<Left>", lambda e: next_image(1))
     root.bind_all("<Right>", lambda e: next_image(-1))
+    root.bind_all("<Escape>", lambda e: quit())
     
     if has_pil:
         menubar = Menu(root)
