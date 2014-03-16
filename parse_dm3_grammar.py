@@ -1,3 +1,5 @@
+# mfm 2014-02-28
+# Thinking about doing a non-recursive version to make things simpler
 # mfm 2014-02-21 
 # moved to  agrammar object now. Can we write too??
 # mfm 2013-12-27
@@ -102,6 +104,10 @@ def get_from_file(f, stype):
     else:
         return d
 
+def write_to_file(f, stype, data):
+    f.write(struct.pack(stype, data))
+    return data
+
 class ParsedGrammar(object):
     """
     Encapsulates the methods and data for a parsed grammer.
@@ -115,116 +121,69 @@ class ParsedGrammar(object):
         self.parse(g)
         # we assume if something fails as a NameError or syntax error it
         # will also do so in the future, so we cache the result
-        self.failed_eval_cache = {}
         self.writing = writing
-        self.incompatible_stypes = {}
+        self._types = {}
 
-    def transfer(self, dic, name, stype, f):
+    def call_option(self, name, data, f):
         """
-        Transfer an item between the dict and the file.
-        If writing, writes dic[name] into file using stype.
-        If reading, sets dic[name] to stype as read from file.
+        Name should be a member of self returning an array of possible
+        functions. We call them in order, returning the first one to return
+        a non-None value, or None.
         """
-        if stype in self.incompatible_stypes:
-            return None
-
-        if self.writing:
-            log.debug("writing %s as %s", dic[name], stype)
-            f.write(struct.pack(stype, dic[name]))
-        else:
-            src = get_from_file(f, stype)
-            if src is None:
-                log.debug("Adding %s to incompatible struct types", stype)
-                self.incompatible_stypes[stype] = True
-                return None
-            dic[name] = src
-        return dic[name]
-            
-
-
-    def evaluate(self, func, f, data=None):
-        if self.writing:
-            assert data is not None
-        data = data or {}
-        return self._evaluate(func, data, "", f)
+        log.debug("Trying %s options", name)
+        fpos = f.tell()
+        for opt in getattr(self, name):
+            r = opt(data, f)
+            if r is not None:
+                return r
+            f.seek(fpos)
     
-    def _evaluate(self, func, lns, name, f):
+    def get_string_type_and_evaluate(self, s, env):
         """
-        Take a func and uses the lns as a local dictionary. self.__dict__ is
-        used as a dictionary containing functions that func can evaluate to.
-        Func can be three types here, a string, which we simply eval() and then
-        call this again, a function, which we call with a new namespace,
-        or a list, which we again call this for every one.
-        We return the evaluated expression, or None if no suitable rules were
-        found
+        Returns type, obj or [(type, obj), ...]
+        Where type is the type of s, and obj is the evaluated object
+        type should be either 'atom' or  'struct' but intermediate
+        evaluations may use 'evaluable'
         """
-        log.debug("Trying %s: %s", func.__name__ if hasattr(func, '__name__') else func, type(func))
-        if isinstance(func, str):
-            if func in self.failed_eval_cache:
-                return None
-            # we see if this exists in our namespace first
-            if hasattr(self, func):
-                # no point calling eval here, we know exactly what it will eval to!
-                pos = f.tell()
-                for subf in getattr(self, func):
-                    ret = self._evaluate(subf, lns, name, f)
-                    if ret is not None:
-                        return ret
-                    f.seek(pos)  # rewind
-                else:
-                    log.info("No compatible '%s' found! (from %s possibilities)", 
-                        func, len(getattr(self, func)))
-                    return None
+        if isinstance(s, list):
+            return [self.get_string_type_and_evaluate(x, env) for x in s]
+        t = self._types.get(s)
+        if t is None:
+            if self.is_atom(s):
+                self._types[s] = 'atom'
             else:
-                # next we try to get from file
-                t = self.transfer(lns, name, func, f)
-                if t is not None:
-                    log.debug("Found struct string %s=%s", func, t)
-                    return t
                 try:
-                    return self._evaluate(eval(func, self.__dict__, lns.copy()), lns, name, f)
-                except (SyntaxError, NameError) as e:
-                    log.info("_evaluate failed", exc_info=1)
-                    self.failed_eval_cache[func] = True
-                    return None
+                    struct.calcsize(s)
+                    self._types[s] = 'struct'  # this is a valid struct string
+                except struct.error:
+                    self._types[s] = 'evaluable'
+            t = self._types[s]
 
-        if callable(func):
-            if not self.writing:
-                lns[name] = dottabledict()
-            lns[name]['parent'] = lns
-            ret = func(lns[name], f)
-            del lns[name]['parent']
-            if ret is None:
-                del lns[name]  # no good
-                log.debug("function %s failed for %s", func, name)
-                return None
-            return ret
+        log.debug("%s has type %s", s, t)
+        if t == 'evaluable':
+            return self.get_string_type_and_evaluate(
+                eval(s, self.__dict__, env), env)
         else:
-            ret = []
-            for fu in func:
-                newval = self._evaluate(fu, lns, name, f)
-                if newval is None:
-                    log.debug("function %s (of %s) failed for %s", func, len(fu), name)
-                    return None
-                ret.append(newval)
-            lns[name] = ret
-            return ret
-        log.error("%s not evluable!",  func)
-    
+            return t, s
 
-    def parser(self, data,  f, expr, parts):
+    def parser(self, data, f, expr, parts):
         """
         The general function that gets called with a line in the grammar
         as an argument.
-        Evaluates the expression expr in the namespace ns.
         f is a file handle used to read types from.
-        lns and gns are the local and global namespaces respectively.
         parts is the list of atoms we expand to.
-        Returns a dictionary of name: evaluated expression for each part."""
+        Returns a dictionary of name: evaluated expression for each part.
+
+        So For reading, we expect:
+        parser({}, f, 'header', ['version(>l)=3', 'len(>l)', 'endianness(>l)=1', 'section'])
+        to return (assuming file is corrext)
+        {version:3, len:0, endianness:1, section:{...}}
+        and for writing
+        parser({version:3, len:0, endianness:1, section:{...}}, f, 'header', ['version(>l)=3', 'len(>l)', 'endianness(>l)=1', 'section'])
+        would write the same data to the file
+        """
+        ret = dottabledict({'parent': data})
         for p in parts:
-            # first, we format with the current 
-            p = p.format(**data)
-            #p = p.format(**gns)
             log.debug("parsing %s", p)
             # we may have expr=val, so we check that first
             expr = p.split("=", 2)
@@ -234,8 +193,8 @@ class ParsedGrammar(object):
             else:
                 expr = expr[0]
 
-            # we have, for expr, "name(type)" or just "type" which is equivalent to
-            # "type(type)" 
+            # we have, for expr, "name(type)" or just "type" which is
+            # equivalent to "type(type)"
             i = expr.find("(")
             if i >= 0:
                 # we have a name
@@ -246,26 +205,54 @@ class ParsedGrammar(object):
 
             # can we _evaluate this?
             # we evaluate with our current return dictionary as locals.
-            # this allows a part to reference a previous part as if it was a local
-            # note that the evaluation may add more info into locals. We don't want
-            # to return this extra info so we use a copy of ret
+            # this allows a part to reference a previous part as if it was a
+            # local note that the evaluation may add more info into locals.
+            # We don't want to return this extra info so we use a copy of ret
             # this needs to be dottable though
-            new_ret = self._evaluate(expr, data, name, f)
-            if new_ret is None:
-                return None
+            expr = expr.format(**ret)
+            # this will either be tuple ot list of tuples
+            types = self.get_string_type_and_evaluate(expr, ret)
+            is_array = isinstance(types, list)
+            if not is_array:
+                types = [types]
 
-            if expected and str(new_ret) != expected:
-                log.debug("%s NOT %s but %s!", name, expected, new_ret)
+            r = []
+            for i, (atom_type, atom) in enumerate(types):
+                if self.writing:
+                    log.debug("Writing %s", data[name])
+                    to_write = data[name][i] if is_array else data[name]
+                    if atom_type == 'struct':
+                        ai = write_to_file(f, atom, to_write)
+                    else:
+                        ai = self.call_option(atom, to_write, f)
+                else:
+                    if atom_type == 'struct':
+                        ai = get_from_file(f, atom)
+                    else:
+                        ai = self.call_option(atom, ret, f)
+                if ai is None:
+                    return None
+                r.append(ai)
+            if not is_array:
+                r = r[0]
+
+            if expected and str(r) != expected:
+                log.debug("%s NOT %s but %s!", name, expected, r)
                 return None  # incompatible
-
+            ret[name] = r
             # print "%s is %s" % (name, ret[name])
-        return data
+        del ret['parent']
+        return ret
 
+    def is_atom(self, s):
+        return s in self._atoms
 
     def parse(self, g):
         """ for the description g (see above for info), we find all the
         possibilities and insert into self.
         We also return the processed dictionary"""
+        self._literals = []
+        self._atoms = []
         ns = defaultdict(list)
         for l in g.splitlines():
             l = l.strip()
@@ -277,8 +264,9 @@ class ParsedGrammar(object):
             # a=x
             if l.find("=") != -1 and (
                     l.find(":") > l.find("=") or l.find(":") == -1):
-                name, literal = l.split("=")
-                ns[name.strip()] = literal.strip()
+                name, literal = [x.strip() for x in l.split("=")]
+                ns[name] = literal
+                self._literals.append(name)
             else:
                 name, expr = l.split(":")
                 # we'll also split up the parts too, and send in to parser func
@@ -286,6 +274,7 @@ class ParsedGrammar(object):
                 f = functools.partial(self.parser, expr=expr, parts=parts)
                 f.__name__ = name
                 ns[name].append(f)
+                self._atoms.append(name)
         self.__dict__.update(ns)
 
 def dm3_to_dictionary(d):
@@ -320,19 +309,26 @@ def dm3_to_dictionary(d):
 
 def parse_dm3_header(file):
     g = ParsedGrammar(dm3_grammar)
-    out = g.evaluate('header', file)
+    out = g.header[0](None,  file)
     d = dm3_to_dictionary(out)
     return d
 
 if __name__ == '__main__':
     import sys
+    import os
     import pprint
+    import logging
+    logging.basicConfig()
     g = ParsedGrammar(dm3_grammar)
     fname = sys.argv[1] if len(sys.argv) > 1 else "16x2_Ramp_int32.dm3"
     print "opening " + fname
     with open(fname, 'rb') as f:
-        out = g.evaluate('header',  f)
-    pprint.pprint(out)
+        out = g.header[0](None,  f)
+    g.writing = True
+    log.setLevel(logging.DEBUG)
+    with open("out".join(os.path.splitext(fname)), 'wb') as f:
+        out2 = g.header[0](out,  f)
+    #pprint.pprint(out)
     d = dm3_to_dictionary(out)
     # pprint.pprint(d)
     print "done"
