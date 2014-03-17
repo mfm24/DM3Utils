@@ -24,7 +24,7 @@
 
 # could implement lazy reading at some point, might be fun.
 dm3_grammar = """
-header:     version(>l)=3, len(>l), endianness(>l)=1, section
+header:     version(>l)=3, len(>l), endianness(>l)=1, section, end(>l)=0, end2(>l)=0
 section:    is_dict(b), open(b), num_tags(>l), data(["named_data"]*num_tags)
 named_data: sdtype(b)=20, name_length(>H), name({name_length}s), section
 named_data: sdtype(b)=21, name_length(>H), name({name_length}s), dataheader
@@ -105,7 +105,13 @@ def get_from_file(f, stype):
         return d
 
 def write_to_file(f, stype, data):
-    f.write(struct.pack(stype, data))
+    log.debug("writing %s as %s", data, stype)
+    if isinstance(data, array):
+        data = data.tolist()
+    elif not isinstance(data, list):
+        data = [data]
+
+    f.write(struct.pack(stype, *data))
     return data
 
 class ParsedGrammar(object):
@@ -182,7 +188,6 @@ class ParsedGrammar(object):
         parser({version:3, len:0, endianness:1, section:{...}}, f, 'header', ['version(>l)=3', 'len(>l)', 'endianness(>l)=1', 'section'])
         would write the same data to the file
         """
-        ret = dottabledict({'parent': data})
         for p in parts:
             log.debug("parsing %s", p)
             # we may have expr=val, so we check that first
@@ -209,40 +214,47 @@ class ParsedGrammar(object):
             # local note that the evaluation may add more info into locals.
             # We don't want to return this extra info so we use a copy of ret
             # this needs to be dottable though
-            expr = expr.format(**ret)
+            expr = expr.format(**data)
             # this will either be tuple ot list of tuples
-            types = self.get_string_type_and_evaluate(expr, ret)
+            types = self.get_string_type_and_evaluate(expr, data)
             is_array = isinstance(types, list)
             if not is_array:
                 types = [types]
 
-            r = []
-            for i, (atom_type, atom) in enumerate(types):
-                if self.writing:
+            if self.writing:
+                for i, (atom_type, atom) in enumerate(types):
                     log.debug("Writing %s", data[name])
                     to_write = data[name][i] if is_array else data[name]
                     if atom_type == 'struct':
                         ai = write_to_file(f, atom, to_write)
                     else:
+                        to_write['parent'] = data
                         ai = self.call_option(atom, to_write, f)
-                else:
+                        del to_write['parent']
+                        if ai is None:
+                            return None
+            else:
+                r = []
+                for i, (atom_type, atom) in enumerate(types):
                     if atom_type == 'struct':
-                        ai = get_from_file(f, atom)
+                        newdata = get_from_file(f, atom)
                     else:
-                        ai = self.call_option(atom, ret, f)
-                if ai is None:
-                    return None
-                r.append(ai)
-            if not is_array:
-                r = r[0]
+                        newdata = dottabledict({'parent': data})
+                        ai = self.call_option(atom, newdata, f)
+                        del newdata['parent']
+                        if ai is None:
+                            return None
+                    r.append(newdata)
+                if not is_array:
+                    r = r[0]
+                data[name] = r
 
-            if expected and str(r) != expected:
-                log.debug("%s NOT %s but %s!", name, expected, r)
+            if expected and str(data[name]) != expected:
+                log.debug("%s NOT %s but %s!", name, expected, data[name])
                 return None  # incompatible
-            ret[name] = r
+
             # print "%s is %s" % (name, ret[name])
-        del ret['parent']
-        return ret
+        return data
 
     def is_atom(self, s):
         return s in self._atoms
@@ -309,7 +321,7 @@ def dm3_to_dictionary(d):
 
 def parse_dm3_header(file):
     g = ParsedGrammar(dm3_grammar)
-    out = g.header[0](None,  file)
+    out = g.header[0]({},  file)
     d = dm3_to_dictionary(out)
     return d
 
@@ -323,9 +335,9 @@ if __name__ == '__main__':
     fname = sys.argv[1] if len(sys.argv) > 1 else "16x2_Ramp_int32.dm3"
     print "opening " + fname
     with open(fname, 'rb') as f:
-        out = g.header[0](None,  f)
+        out = g.header[0]({},  f)
     g.writing = True
-    log.setLevel(logging.DEBUG)
+    # log.setLevel(logging.DEBUG)
     with open("out".join(os.path.splitext(fname)), 'wb') as f:
         out2 = g.header[0](out,  f)
     #pprint.pprint(out)
