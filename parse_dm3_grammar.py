@@ -215,16 +215,24 @@ class ParsedGrammar(object):
             # We don't want to return this extra info so we use a copy of ret
             # this needs to be dottable though
             expr = expr.format(**data)
-            # this will either be tuple ot list of tuples
+            # this will either be tuple or list of tuples
             types = self.get_string_type_and_evaluate(expr, data)
-            is_array = isinstance(types, list)
-            if not is_array:
+            # we create a list of object, attr names where we
+            # setattr(object, name, read_data) as we read data
+            if isinstance(types, list):
+                if not self.writing:
+                    data[name] = [None] * len(types)
+                keys = range(len(types))
+                write_object = data[name]   
+            else:
+                write_object = data
+                keys = [name]
                 types = [types]
 
             if self.writing:
-                for i, (atom_type, atom) in enumerate(types):
+                for k, (atom_type, atom) in zip(keys, types):
                     log.debug("Writing %s", data[name])
-                    to_write = data[name][i] if is_array else data[name]
+                    to_write = write_object.__getitem__(k)
                     if atom_type == 'struct':
                         ai = write_to_file(f, atom, to_write)
                     else:
@@ -234,8 +242,7 @@ class ParsedGrammar(object):
                         if ai is None:
                             return None
             else:
-                r = []
-                for i, (atom_type, atom) in enumerate(types):
+                for k, (atom_type, atom) in zip(keys, types):
                     if atom_type == 'struct':
                         newdata = get_from_file(f, atom)
                     else:
@@ -244,10 +251,7 @@ class ParsedGrammar(object):
                         del newdata['parent']
                         if ai is None:
                             return None
-                    r.append(newdata)
-                if not is_array:
-                    r = r[0]
-                data[name] = r
+                    write_object.__setitem__(k, newdata)
 
             if expected and str(data[name]) != expected:
                 log.debug("%s NOT %s but %s!", name, expected, data[name])
@@ -338,8 +342,10 @@ if __name__ == '__main__':
         out = g.header[0]({},  f)
     g.writing = True
     # log.setLevel(logging.DEBUG)
-    with open("out".join(os.path.splitext(fname)), 'wb') as f:
-        out2 = g.header[0](out,  f)
+    write_also = True
+    if write_also:
+        with open("out".join(os.path.splitext(fname)), 'wb') as f:
+            out2 = g.header[0](out,  f)
     #pprint.pprint(out)
     d = dm3_to_dictionary(out)
     # pprint.pprint(d)
