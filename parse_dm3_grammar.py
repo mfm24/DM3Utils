@@ -24,7 +24,7 @@
 
 # could implement lazy reading at some point, might be fun.
 dm3_grammar = """
-header:     version(>l)=3, len(>l), endianness(>l)=1, section, end(>l)=0, end2(>l)=0
+header:     version(>l)=3, len(>l), endianness(>l)=1, section
 section:    is_dict(b), open(b), num_tags(>l), data(["named_data"]*num_tags)
 named_data: sdtype(b)=20, name_length(>H), name({name_length}s), section
 named_data: sdtype(b)=21, name_length(>H), name({name_length}s), dataheader
@@ -60,12 +60,106 @@ array_data: arraydtype(>l), len(>l), array("{len}"+simpledata_{arraydtype})
 import functools
 import struct
 from collections import defaultdict
+import collections
 import re
 from array import array
-from logging import root as log
+import logging
+log = logging.root
+
+class DelayedReadDictionary(collections.Mapping):
+    """
+    A dictionary that stores the file position and data type
+    of its elements, and only actually reads them when the item
+    is accessed.
+    Optionally can be treated by a list, where iter exposes sorted
+    values rather than keys.
+    """
+    def __init__(self, items=None, list_like=False):
+        self.delayed = {}
+        self.read = {}
+        # dict.__init__(*args) doesn't call update for some reason
+        if items:
+            self.read.update(items)
+        self.list_like=list_like
+
+    def set_file(self, f):
+        self.f = f
+        # delayed is a key: (fpos, type) dictionary
+        self.delayed = {}
+
+    def delay_read(self, key, stype):
+        """
+        Sets an entry in the delayed read list. This will be read from
+        the file in getitem if needed later
+        """
+        p = self.f.tell()
+        log.debug("Future read: %s @ %d", key, p)
+        self.delayed[key] = (p, stype)
+        self.f.seek(p + struct.calcsize(stype))
+
+    def read_now(self, key):
+        if key in self.delayed:
+            current_pos = self.f.tell()
+            pos, stype = self.delayed[key]
+            self.f.seek(pos)
+            self.read[key] =  get_from_file(self.f, stype)
+            log.debug("Now reading %s: %s", key, self.read[key])
+            #we have to revert to current pos
+            self.f.seek(current_pos)
+
+    def __setitem__(self, k, v):
+        self.read[k] = v
+
+    def __getitem__(self, k):
+        if k not in self.read:
+            self.read_now(k)
+        return self.read[k]
+
+    def __delitem__(self, k):
+        if k in self.read:
+            del self.read[k]
+        if k in self.delayed:
+            del self.delayed[k]
+
+    # need __iter__, __getitem__ and __len__ to be a mapping we can pass with **
+    def __iter__(self):
+        items = set(self.delayed.keys() + self.read.keys())
+        if self.list_like:
+            items = [self[k] for k in sorted(items)]
+        log.debug("Iter exposes %s", items)
+        for k in items:
+            yield k
+
+    def __len__(self):
+        return len(set(self.delayed.keys() + self.read.keys()))
+
+    def flatten(self):
+        """
+        Convert this and nay child mappables to dicts.
+        Additionally, DelayedReadDictionary with like_list are converted
+        to lists
+        """
+        if self.list_like:
+            ret = []
+            for i in self:
+                if hasattr(i, "flatten"):
+                    ret.append(i.flatten())
+                else:
+                    ret.append(i)
+        else:
+            ret = {}
+            for i in self:
+                if hasattr(self[i], "flatten"):
+                    ret[i] = self[i].flatten()
+                else:
+                    ret[i] = self[i]
+        return ret
 
 
-class dottabledict(dict):
+dottabledict_base = DelayedReadDictionary
+#dottabledict_base = dict
+
+class dottabledict(dottabledict_base):
     """a dictionary where d[name]==d.name"""
     def __getattr__(self, key):
         return self[key]
@@ -122,13 +216,20 @@ class ParsedGrammar(object):
     functions, or else the globals() dictionary. Both were unwieldy with the
     latter only effectively allowing one grammar at a time.
     """
-    def __init__(self, g, writing=False):
+    def __init__(self, g, default_type, writing=False):
         self.grammar = g
         self.parse(g)
         # we assume if something fails as a NameError or syntax error it
         # will also do so in the future, so we cache the result
         self.writing = writing
         self._types = {}
+        self.default_type = default_type
+
+    def open(self, f):
+        data = dottabledict()
+        data.set_file(f)
+        self.call_option(self.default_type, data, f)
+        return data
 
     def call_option(self, name, data, f):
         """
@@ -136,13 +237,15 @@ class ParsedGrammar(object):
         functions. We call them in order, returning the first one to return
         a non-None value, or None.
         """
-        log.debug("Trying %s options", name)
         fpos = f.tell()
+        log.debug("Trying options '%s' @ %s", name, fpos)
         for opt in getattr(self, name):
             r = opt(data, f)
             if r is not None:
                 return r
+            log.debug('Option %s failed, rewinding to %s', opt, fpos)
             f.seek(fpos)
+        log.debug("No valid options '%s' @ %s!", name, fpos)
     
     def get_string_type_and_evaluate(self, s, env):
         """
@@ -167,6 +270,7 @@ class ParsedGrammar(object):
 
         log.debug("%s has type %s", s, t)
         if t == 'evaluable':
+            log.debug("evaluating %s", s)
             return self.get_string_type_and_evaluate(
                 eval(s, self.__dict__, env), env)
         else:
@@ -221,7 +325,8 @@ class ParsedGrammar(object):
             # setattr(object, name, read_data) as we read data
             if isinstance(types, list):
                 if not self.writing:
-                    data[name] = [None] * len(types)
+                    data[name] = dottabledict(list_like=True)
+                    data[name].set_file(f)
                 keys = range(len(types))
                 write_object = data[name]   
             else:
@@ -244,20 +349,26 @@ class ParsedGrammar(object):
             else:
                 for k, (atom_type, atom) in zip(keys, types):
                     if atom_type == 'struct':
-                        newdata = get_from_file(f, atom)
+                        #newdata = get_from_file(f, atom)
+                        write_object.delay_read(k, atom)
                     else:
                         newdata = dottabledict({'parent': data})
+                        newdata.set_file(f)
                         ai = self.call_option(atom, newdata, f)
                         del newdata['parent']
                         if ai is None:
                             return None
-                    write_object.__setitem__(k, newdata)
+                        write_object.__setitem__(k, newdata)
 
-            if expected and str(data[name]) != expected:
-                log.debug("%s NOT %s but %s!", name, expected, data[name])
-                return None  # incompatible
+            if expected:
+                if str(data[name]) != expected:
+                    log.debug("%s NOT %s but %s!", name, expected, data[name])
+                    return None  # incompatible
+                else:
+                    log.debug("%s IS %s!", name, expected)
 
             # print "%s is %s" % (name, ret[name])
+        assert data is not None
         return data
 
     def is_atom(self, s):
@@ -324,8 +435,8 @@ def dm3_to_dictionary(d):
     return add_to_out('section', d['section'])
 
 def parse_dm3_header(file):
-    g = ParsedGrammar(dm3_grammar)
-    out = g.header[0]({},  file)
+    g = ParsedGrammar(dm3_grammar, 'header')
+    out = g.open(file)
     d = dm3_to_dictionary(out)
     return d
 
@@ -333,21 +444,24 @@ if __name__ == '__main__':
     import sys
     import os
     import pprint
-    import logging
     logging.basicConfig()
-    g = ParsedGrammar(dm3_grammar)
+    # log.setLevel(logging.DEBUG)
+    g = ParsedGrammar(dm3_grammar, 'header')
     fname = sys.argv[1] if len(sys.argv) > 1 else "16x2_Ramp_int32.dm3"
     print "opening " + fname
+
     with open(fname, 'rb') as f:
-        out = g.header[0]({},  f)
+        out = g.open(f)
+        # any potential reads have to be done with the file still open
+        d = dm3_to_dictionary(out)
     g.writing = True
     # log.setLevel(logging.DEBUG)
-    write_also = True
+    write_also = False
     if write_also:
         with open("out".join(os.path.splitext(fname)), 'wb') as f:
             out2 = g.header[0](out,  f)
     #pprint.pprint(out)
-    d = dm3_to_dictionary(out)
+   
     # pprint.pprint(d)
     print "done"
     # would now need to convert to a nicer dict, prefereably one compatible with parse_dm3.

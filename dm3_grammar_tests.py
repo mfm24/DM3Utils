@@ -12,7 +12,7 @@ logging.debug("Hello")
 log.setLevel(0)
 class dm3GrammarTester(unittest.TestCase):
 
-    def stest_struct(self):
+    def test_struct(self):
         s = StringIO()
         # rest of dataheader
         s.write("%%%%"+struct.pack(">l l", 0, 15))
@@ -27,10 +27,15 @@ class dm3GrammarTester(unittest.TestCase):
         s.seek(0)
 
         g = ParsedGrammar(dm3_grammar)
-        ret = g.evaluate('dataheader', s)
+        out = dottabledict()
+        out.set_file(s)
+        ret = g.dataheader[0](out,  s)
+        # ret = g.evaluate('dataheader', s)
         pprint(ret)
         time.sleep(0.1)
-        self.assertEqual(ret, 
+        retf = ret.flatten()
+        print retf
+        self.assertDictContainsSubset(
             {'delim': '%%%%',
              'dtype': 15,
              'headerlen': 0,
@@ -39,9 +44,9 @@ class dm3GrammarTester(unittest.TestCase):
                                'num_fields': 3,
                                'types': [{'dtype': 3, 'length': 0},
                                          {'dtype': 5, 'length': 0},
-                                         {'dtype': 2, 'length': 0}]}})
+                                         {'dtype': 2, 'length': 0}]}}, retf)
 
-    def test_write(self):
+    def x_test_write(self):
         log.setLevel(100)  #disable for reading part...
         s = StringIO()
         # rest of dataheader
