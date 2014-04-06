@@ -1,6 +1,6 @@
 # mfm 2014-02-28
 # Thinking about doing a non-recursive version to make things simpler
-# mfm 2014-02-21 
+# mfm 2014-02-21
 # moved to  agrammar object now. Can we write too??
 # mfm 2013-12-27
 #
@@ -21,19 +21,20 @@
 # All entries are formatted at run time with the previous read
 # names. A special name, 'parent', can be used to access the parent of
 # the current location.
-
-# could implement lazy reading at some point, might be fun.
+#
+# additionally variables can be defined starting with _. No atoms should
+# therefore begin with _ as they won't be looked up
 dm3_grammar = """
-header:     version(>l)=3, len(>l), endianness(>l)=1, section
+header:     version(>l)=3, len(>l), _pos=f.tell(), endianness(>l)=1, section, len=f.tell()-_pos
 section:    is_dict(b), open(b), num_tags(>l), data(["named_data"]*num_tags)
 named_data: sdtype(b)=20, name_length(>H), name({name_length}s), section
 named_data: sdtype(b)=21, name_length(>H), name({name_length}s), dataheader
 # struct-specific data entry
-dataheader: delim(4s)=%%%%, headerlen(>l), dtype(>l)=15, struct_header, struct_data
+dataheader: delim(4s)="%%%%", headerlen(>l),  _pos=f.tell(), dtype(>l)=15, struct_header, headerlen=(f.tell()-_pos)/4, struct_data
 # array-specific data entry
-dataheader: delim(4s)=%%%%, headerlen(>l), dtype(>l)=20, array_data
+dataheader: delim(4s)="%%%%", headerlen(>l), _pos=f.tell(), dtype(>l)=20, array_data, headerlen=(array_data._end-_pos)/4,
 # simple data
-dataheader: delim(4s)=%%%%, headerlen(>l), dtype(>l), data(simpledata_{dtype})
+dataheader: delim(4s)="%%%%", headerlen(>l), _pos=f.tell(),  dtype(>l), headerlen=(f.tell()-_pos)/4, data(simpledata_{dtype})
 
 simpledata_2 = h
 simpledata_3 = i
@@ -51,10 +52,10 @@ simpledata_12 = Q
 struct_header: length(>l)=0, num_fields(>l), types(["struct_dtype"]*num_fields)
 struct_data: data([("simpledata_%s" % dtypes.dtype) for dtypes in parent.struct_header.types])
 struct_dtype: length(>l)=0, dtype(>l)
- 
-array_data: arraydtype(>l)=15, struct_header, len(>l), array(["struct_data"]*len)
+
+array_data: arraydtype(>l)=15, struct_header, len(>l), _end=f.tell(), array(["struct_data"]*len)
 #general case:
-array_data: arraydtype(>l), len(>l), array("{len}"+simpledata_{arraydtype})
+array_data: arraydtype(>l), len(>l), _end=f.tell(), array("{len}"+simpledata_{arraydtype})
 """
 
 import functools
@@ -133,24 +134,24 @@ class DelayedReadDictionary(collections.Mapping):
     def __len__(self):
         return len(set(self.delayed.keys() + self.read.keys()))
 
-    def flatten(self):
+    def to_std_type(self):
         """
-        Convert this and nay child mappables to dicts.
+        Convert this and aay child mappables to dicts.
         Additionally, DelayedReadDictionary with like_list are converted
         to lists
         """
         if self.list_like:
             ret = []
             for i in self:
-                if hasattr(i, "flatten"):
-                    ret.append(i.flatten())
+                if hasattr(i, "to_std_type"):
+                    ret.append(i.to_std_type())
                 else:
                     ret.append(i)
         else:
             ret = {}
             for i in self:
-                if hasattr(self[i], "flatten"):
-                    ret[i] = self[i].flatten()
+                if hasattr(self[i], "to_std_type"):
+                    ret[i] = self[i].to_std_type()
                 else:
                     ret[i] = self[i]
         return ret
@@ -169,7 +170,7 @@ class dottabledict(dottabledict_base):
 
 array_compatible_re = re.compile(r"""# any amount of whitepace:
                                      \s*
-                                     # optional endianness param, first group:    
+                                     # optional endianness param, first group:
                                      ([<>]?)
                                      # required decimal, 2nd group:
                                      (\d+)
@@ -226,27 +227,34 @@ class ParsedGrammar(object):
         self.default_type = default_type
 
     def open(self, f):
-        data = dottabledict()
-        data.set_file(f)
-        self.call_option(self.default_type, data, f)
-        return data
+        self.f = f  # for using f in grammar
+        return self.call_option(self.default_type, None, None, f)
 
-    def call_option(self, name, data, f):
+    def call_option(self, atom, parent, data, f):
         """
         Name should be a member of self returning an array of possible
         functions. We call them in order, returning the first one to return
         a non-None value, or None.
         """
         fpos = f.tell()
-        log.debug("Trying options '%s' @ %s", name, fpos)
-        for opt in getattr(self, name):
-            r = opt(data, f)
+        log.debug("Trying options '%s' @ %s", atom, fpos)
+        if not self.writing:
+            assert data is None
+        for opt in getattr(self, atom):
+            if not self.writing:
+                data = dottabledict({'parent': parent})
+                data.set_file(f)
+                r = opt(data, f)
+            else:
+                data['parent'] = parent
+                r = opt(data, f)
             if r is not None:
+                del data['parent']
                 return r
             log.debug('Option %s failed, rewinding to %s', opt, fpos)
             f.seek(fpos)
-        log.debug("No valid options '%s' @ %s!", name, fpos)
-    
+        log.debug("No valid options '%s' @ %s!", atom, fpos)
+
     def get_string_type_and_evaluate(self, s, env):
         """
         Returns type, obj or [(type, obj), ...]
@@ -303,6 +311,8 @@ class ParsedGrammar(object):
             expected = None
             if len(expr) == 2:
                 expr, expected = expr
+                expected = eval(expected, self.__dict__, data)
+                assert expected is not None
             else:
                 expr = expr[0]
 
@@ -316,6 +326,34 @@ class ParsedGrammar(object):
             else:
                 name = expr
 
+            # if name begins with '_', it's a variable. It gets set by its
+            # expected value and can never be an atom or need formatting
+            if name.startswith('_'):
+                # would be nice to keep this separate from our explicitly
+                # read / written data. Maybe we could ignore this when
+                # converting to dict?
+                data[name] = expected
+                log.debug("setting variable '%s' to %s", name, expected)
+                continue
+
+            # If name exists already in data, we assume this is a check.
+            # we want to be able to say
+            # atom: len(>l), len=4
+            # and have the second statement realise it refers to an existing
+            # variable and check it. When writing we'll write this. The main
+            # reason for this is to allow length paramaters:
+            # atom: len(>l), ..., len=f.tell()-len.pos
+            # maybe...
+            # this doesn't work - we're reusing our newdata array in call_opt
+            # even when we fail, I think we should start being stricter about
+            # our dictionaries: we have env, in (if writing) and out
+            # and we shouldn't try to get away with just one. Would also be
+            # nice to standardise on reading returning and writing taking
+            # input only?
+            if name in data:
+                if data[name] != expected:
+                    print "'%s'=%s IS NOT %s" % (name, data[name], expected)
+                continue
             # can we _evaluate this?
             # we evaluate with our current return dictionary as locals.
             # this allows a part to reference a previous part as if it was a
@@ -332,7 +370,7 @@ class ParsedGrammar(object):
                     data[name] = dottabledict(list_like=True)
                     data[name].set_file(f)
                 keys = range(len(types))
-                write_object = data[name]   
+                write_object = data[name]
             else:
                 write_object = data
                 keys = [name]
@@ -345,9 +383,7 @@ class ParsedGrammar(object):
                     if atom_type == 'struct':
                         ai = write_to_file(f, atom, to_write)
                     else:
-                        to_write['parent'] = data
-                        ai = self.call_option(atom, to_write, f)
-                        del to_write['parent']
+                        ai = self.call_option(atom, data, to_write, f)
                         if ai is None:
                             return None
             else:
@@ -356,16 +392,13 @@ class ParsedGrammar(object):
                         #newdata = get_from_file(f, atom)
                         write_object.delay_read(k, atom)
                     else:
-                        newdata = dottabledict({'parent': data})
-                        newdata.set_file(f)
-                        ai = self.call_option(atom, newdata, f)
-                        del newdata['parent']
-                        if ai is None:
+                        newdata = self.call_option(atom, data, None, f)
+                        if newdata is None:
                             return None
                         write_object.__setitem__(k, newdata)
 
             if expected:
-                if str(data[name]) != expected:
+                if data[name] != expected:
                     log.debug("%s NOT %s but %s!", name, expected, data[name])
                     return None  # incompatible
                 else:
@@ -465,7 +498,7 @@ if __name__ == '__main__':
         with open("out".join(os.path.splitext(fname)), 'wb') as f:
             out2 = g.header[0](out,  f)
     #pprint.pprint(out)
-   
+
     # pprint.pprint(d)
     print "done"
     # would now need to convert to a nicer dict, prefereably one compatible with parse_dm3.
