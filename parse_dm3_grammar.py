@@ -271,8 +271,12 @@ class ParsedGrammar(object):
         log.debug("%s has type %s", s, t)
         if t == 'evaluable':
             log.debug("evaluating %s", s)
+            # evaluating may create variables that we don't want put in env
+            # yet at the same time we need both env (for local information)
+            # and self.__dict__ (for evaluating to atoms).
+            # let's send in a copy of env
             return self.get_string_type_and_evaluate(
-                eval(s, self.__dict__, env), env)
+                eval(s, self.__dict__, env.copy()), env)
         else:
             return t, s
 

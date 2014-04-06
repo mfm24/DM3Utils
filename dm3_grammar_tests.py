@@ -26,7 +26,7 @@ class dm3GrammarTester(unittest.TestCase):
         s.write(struct.pack("< iIh", 43.5, 23.4, 12.7))
         s.seek(0)
 
-        g = ParsedGrammar(dm3_grammar)
+        g = ParsedGrammar(dm3_grammar, 'header')
         out = dottabledict()
         out.set_file(s)
         ret = g.dataheader[0](out,  s)
