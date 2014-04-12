@@ -99,7 +99,7 @@ class DelayedReadDictionary(collections.Mapping):
         Later calls to setitem will write to this position
         """
         p = self.f.tell()
-        log.debug("Future read: %s @ %d", key, p)
+        log.debug("Future access: %s @ %d", key, p)
         self.delayed[key] = (p, stype)
         size = struct.calcsize(stype)
         if self.is_writing:
@@ -108,7 +108,7 @@ class DelayedReadDictionary(collections.Mapping):
                 stype = "%sb" % size
             else:
                 self.read[key] = data
-            write_to_file(f, stype, data)
+            write_to_file(self.f, stype, data)
 
         self.f.seek(p + size)
 
@@ -148,9 +148,10 @@ class DelayedReadDictionary(collections.Mapping):
 
     # need __iter__, __getitem__ and __len__ to be a mapping we can pass with **
     def __iter__(self):
-        items = set(self.delayed.keys() + self.read.keys())
         if self.list_like:
             items = [self[k] for k in sorted(items)]
+        else:
+            items = set(self.delayed.keys() + self.read.keys())
         log.debug("Iter exposes %s", items)
         for k in items:
             yield k
@@ -252,9 +253,17 @@ class ParsedGrammar(object):
 
     def open(self, f):
         self.f = f  # for using f in grammar
+        self.writing = False
         parent = dottabledict()
         parent.set_file(f)
         return self.call_option(self.default_type, parent, None)
+
+    def save(self, f, data):
+        self.f = f  # for using f in grammar
+        self.writing = True
+        parent = dottabledict()
+        parent.set_file(f)
+        return self.call_option(self.default_type, parent, data)
 
     def call_option(self, atom, io_object, data):
         """
@@ -262,14 +271,14 @@ class ParsedGrammar(object):
         functions. We call them in order, returning the first one to return
         a non-None value, or None.
         """
+        log.debug("Calloption: %s", data)
         fpos = io_object.f.tell()
         log.debug("Trying options '%s' @ %s", atom, fpos)
-        if not self.writing:
-            assert data is None
+        assert (data is None) != self.writing
         for opt in getattr(self, atom):
             new_io = dottabledict({'parent': io_object})
             new_io.set_file(io_object.f, self.writing)
-            r = opt(new_io, None)
+            r = opt(new_io, data)
             if r is not None:
                 del new_io['parent']
                 return r
@@ -314,17 +323,8 @@ class ParsedGrammar(object):
         """
         The general function that gets called with a line in the grammar
         as an argument.
-        f is a file handle used to read types from.
-        parts is the list of atoms we expand to.
-        Returns a dictionary of name: evaluated expression for each part.
-
-        So For reading, we expect:
-        parser({}, f, 'header', ['version(>l)=3', 'len(>l)', 'endianness(>l)=1', 'section'])
-        to return (assuming file is corrext)
-        {version:3, len:0, endianness:1, section:{...}}
-        and for writing
-        parser({version:3, len:0, endianness:1, section:{...}}, f, 'header', ['version(>l)=3', 'len(>l)', 'endianness(>l)=1', 'section'])
-        would write the same io_object to the file
+        io_object is used to map the file into a read/writable dictionary.
+        Data is the data to write and should be null for reading
         """
         for p in parts:
             log.debug("parsing %s", p)
@@ -373,6 +373,7 @@ class ParsedGrammar(object):
             # nice to standardise on reading returning and writing taking
             # input only?
             if name in io_object:
+                log.debug(io_object.to_std_type())
                 if io_object[name] != expected:
                     print "'%s'=%s IS NOT %s" % (name, io_object[name], expected)
                 continue
@@ -388,36 +389,33 @@ class ParsedGrammar(object):
             # we create a list of object, attr names where we
             # setattr(object, name, read_io_object) as we read io_object
             if isinstance(types, list):
-                if not self.writing:
-                    io_object[name] = dottabledict(list_like=True)
-                    io_object[name].set_file(io_object.f)
+                if self.writing:
+                    log.debug("writing list %s, name=%s len=%s",
+                              data[name], name, len(types))
+                get_func = lambda obj, key: obj[name][key]
+                def set_func(obj, key, val):
+                    obj[name][key] = val
                 keys = range(len(types))
-                write_object = io_object[name]
+                io_object[name] = dottabledict(list_like=True)
+                io_object[name].set_file(io_object.f, self.writing)
             else:
-                write_object = io_object
+                # we allow the get_func to return None here is key isn't
+                # present. That way we can write later
+                get_func = lambda obj, key: obj[key]
+                def set_func(obj, key, val):
+                    obj[key] = val
                 keys = [name]
                 types = [types]
 
-            if self.writing:
-                for k, (atom_type, atom) in zip(keys, types):
-                    log.debug("Writing %s", io_object[name])
-                    to_write = write_object.__getitem__(k)
-                    if atom_type == 'struct':
-                        ai = write_to_file(io_object.f, atom, to_write)
-                    else:
-                        ai = self.call_option(atom, io_object, to_write, io_object.f)
-                        if ai is None:
-                            return None
-            else:
-                for k, (atom_type, atom) in zip(keys, types):
-                    if atom_type == 'struct':
-                        #newio_object = get_from_file(f, atom)
-                        write_object.set_key_here(k, atom)
-                    else:
-                        newio_object = self.call_option(atom, io_object, None)
-                        if newio_object is None:
-                            return None
-                        write_object.__setitem__(k, newio_object)
+            for k, (atom_type, atom) in zip(keys, types):
+                source_data = get_func(data, k) if self.writing else None
+                if atom_type == 'struct':
+                    io_object.set_key_here(k, atom, source_data)
+                else:
+                    newio_object = self.call_option(atom, io_object, source_data)
+                    if newio_object is None:
+                        return None
+                    set_func(io_object, k, newio_object)
 
             if expected:
                 if io_object[name] != expected:
@@ -513,12 +511,15 @@ if __name__ == '__main__':
         out = g.open(nosingleletter_f)
         # any potential reads have to be done with the file still open
         d = dm3_to_dictionary(out)
-    g.writing = True
-    # log.setLevel(logging.DEBUG)
+    print "Finished reading!"
+    assert len(out['section'].data[0].dataheader.struct_data.data) == 4
+    assert out['section'].data[0].name == 'ApplicationBounds'
+    assert
     write_also = False
     if write_also:
+        log.setLevel(logging.DEBUG)
         with open("out".join(os.path.splitext(fname)), 'wb') as nosingleletter_f:
-            out2 = g.header[0](out,  nosingleletter_f)
+            out2 = g.save(nosingleletter_f, out.to_std_type())
     #pprint.pprint(out)
 
     # pprint.pprint(d)
