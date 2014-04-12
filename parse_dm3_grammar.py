@@ -102,7 +102,7 @@ class DelayedReadDictionary(collections.Mapping):
         log.debug("Future access: %s @ %d", key, p)
         self.delayed[key] = (p, stype)
         size = struct.calcsize(stype)
-        if self.is_writing:
+        if self.is_writing and size>0:
             if data is None:
                 data = [0]*size
                 stype = "%sb" % size
@@ -135,6 +135,7 @@ class DelayedReadDictionary(collections.Mapping):
 
     def __getitem__(self, k):
         # when reading we read just once and assume file is constant
+        log.debug("Getting %s", k)
         assert 'is_writing' in self.__dict__
         if not self.is_writing and k not in self.read:
             self.do_io(k)
@@ -148,10 +149,9 @@ class DelayedReadDictionary(collections.Mapping):
 
     # need __iter__, __getitem__ and __len__ to be a mapping we can pass with **
     def __iter__(self):
+        items = set(self.delayed.keys() + self.read.keys())
         if self.list_like:
             items = [self[k] for k in sorted(items)]
-        else:
-            items = set(self.delayed.keys() + self.read.keys())
         log.debug("Iter exposes %s", items)
         for k in items:
             yield k
@@ -274,6 +274,7 @@ class ParsedGrammar(object):
         log.debug("Calloption: %s", data)
         fpos = io_object.f.tell()
         log.debug("Trying options '%s' @ %s", atom, fpos)
+        log.debug('parent is %s' % io_object.keys())
         assert (data is None) != self.writing
         for opt in getattr(self, atom):
             new_io = dottabledict({'parent': io_object})
@@ -383,6 +384,7 @@ class ParsedGrammar(object):
             # local note that the evaluation may add more info into locals.
             # We don't want to return this extra info so we use a copy of ret
             # this needs to be dottable though
+            log.debug("Formatting %s with %s", expr, io_object)
             expr = expr.format(**io_object)
             # this will either be tuple or list of tuples
             types = self.get_string_type_and_evaluate(expr, io_object)
@@ -398,6 +400,7 @@ class ParsedGrammar(object):
                 keys = range(len(types))
                 io_object[name] = dottabledict(list_like=True)
                 io_object[name].set_file(io_object.f, self.writing)
+                this_io_object = io_object[name]
             else:
                 # we allow the get_func to return None here is key isn't
                 # present. That way we can write later
@@ -406,16 +409,17 @@ class ParsedGrammar(object):
                     obj[key] = val
                 keys = [name]
                 types = [types]
+                this_io_object = io_object
 
             for k, (atom_type, atom) in zip(keys, types):
                 source_data = get_func(data, k) if self.writing else None
                 if atom_type == 'struct':
-                    io_object.set_key_here(k, atom, source_data)
+                    this_io_object.set_key_here(k, atom, source_data)
                 else:
                     newio_object = self.call_option(atom, io_object, source_data)
                     if newio_object is None:
                         return None
-                    set_func(io_object, k, newio_object)
+                    this_io_object[k] = newio_object
 
             if expected:
                 if io_object[name] != expected:
@@ -502,7 +506,7 @@ if __name__ == '__main__':
     import os
     import pprint
     logging.basicConfig()
-    log.setLevel(logging.DEBUG)
+    # log.setLevel(logging.DEBUG)
     g = ParsedGrammar(dm3_grammar, 'header')
     fname = sys.argv[1] if len(sys.argv) > 1 else "16x2_Ramp_int32.dm3"
     print "opening " + fname
@@ -514,8 +518,8 @@ if __name__ == '__main__':
     print "Finished reading!"
     assert len(out['section'].data[0].dataheader.struct_data.data) == 4
     assert out['section'].data[0].name == 'ApplicationBounds'
-    assert
-    write_also = False
+
+    write_also = True
     if write_also:
         log.setLevel(logging.DEBUG)
         with open("out".join(os.path.splitext(fname)), 'wb') as nosingleletter_f:
