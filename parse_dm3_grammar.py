@@ -65,6 +65,7 @@ import collections
 import re
 from array import array
 import logging
+import string
 log = logging.root
 
 class DelayedReadDictionary(collections.Mapping):
@@ -102,13 +103,16 @@ class DelayedReadDictionary(collections.Mapping):
         log.debug("Future access: %s @ %d", key, p)
         self.delayed[key] = (p, stype)
         size = struct.calcsize(stype)
-        if self.is_writing and size>0:
-            if data is None:
-                data = [0]*size
-                stype = "%sb" % size
+        if self.is_writing:
+            if size == 0:
+                self.read[key] = None
             else:
-                self.read[key] = data
-            write_to_file(self.f, stype, data)
+                if data is None:
+                    data = [0]*size
+                    stype = "%sb" % size
+                else:
+                    self.read[key] = data
+                write_to_file(self.f, stype, data)
 
         self.f.seek(p + size)
 
@@ -135,11 +139,17 @@ class DelayedReadDictionary(collections.Mapping):
 
     def __getitem__(self, k):
         # when reading we read just once and assume file is constant
-        log.debug("Getting %s", k)
-        assert 'is_writing' in self.__dict__
         if not self.is_writing and k not in self.read:
             self.do_io(k)
+        # NB this fails regularly, eg when looking for a variable here before
+        # globals or if default __contains__ is called
         return self.read[k]
+
+
+    def __contains__(self, k):
+        # default implementation calls getitem and sees if it throws
+        # KeyException. We can do better than this
+        return k in self.read or k in self.delayed
 
     def __delitem__(self, k):
         if k in self.read:
@@ -250,6 +260,7 @@ class ParsedGrammar(object):
         self.writing = writing
         self._types = {}
         self.default_type = default_type
+        self.formatter = string.Formatter()
 
     def open(self, f):
         self.f = f  # for using f in grammar
@@ -374,7 +385,7 @@ class ParsedGrammar(object):
             # nice to standardise on reading returning and writing taking
             # input only?
             if name in io_object:
-                log.debug(io_object.to_std_type())
+                # log.debug(io_object.to_std_type())
                 if io_object[name] != expected:
                     print "'%s'=%s IS NOT %s" % (name, io_object[name], expected)
                 continue
@@ -384,8 +395,13 @@ class ParsedGrammar(object):
             # local note that the evaluation may add more info into locals.
             # We don't want to return this extra info so we use a copy of ret
             # this needs to be dottable though
-            log.debug("Formatting %s with %s", expr, io_object)
-            expr = expr.format(**io_object)
+            log.debug("Formatting %s with %s", expr, "")
+            # using vformat prevents it from indiscriminately getting all
+            # values (as **io_object does)
+            # however, get_string_type_and_evaluate copies io_object anyway
+            # making this probably irrelevant
+            expr = self.formatter.vformat(expr, None, io_object)
+            # expr = expr.format(**io_object)
             # this will either be tuple or list of tuples
             types = self.get_string_type_and_evaluate(expr, io_object)
             # we create a list of object, attr names where we
@@ -515,13 +531,17 @@ if __name__ == '__main__':
         out = g.open(nosingleletter_f)
         # any potential reads have to be done with the file still open
         d = dm3_to_dictionary(out)
+        # if we want to write this, we need to make sure all fields have been
+        # read. Note we don't have to read everything if we just want the image
+        # data
+        out.to_std_type()
     print "Finished reading!"
     assert len(out['section'].data[0].dataheader.struct_data.data) == 4
     assert out['section'].data[0].name == 'ApplicationBounds'
 
     write_also = True
     if write_also:
-        log.setLevel(logging.DEBUG)
+        #log.setLevel(logging.DEBUG)
         with open("out".join(os.path.splitext(fname)), 'wb') as nosingleletter_f:
             out2 = g.save(nosingleletter_f, out.to_std_type())
     #pprint.pprint(out)
