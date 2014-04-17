@@ -24,6 +24,14 @@
 #
 # additionally variables can be defined starting with _. No atoms should
 # therefore begin with _ as they won't be looked up
+#
+# assignments are checked for truth when reading. When writing they are
+# also checked for truth if specified, else written by the first assignment
+# reached. This means, for example, version doen't have to be specified in
+# data to write, as header will set it to 3. Similarly the delim="%%%%" can
+# be skipped as it is identical for all dataheader possibilites - the
+# first one tried will write it, and subsequent will allow it as a valid
+# possibility
 dm3_grammar = """
 header:     version(>l)=3, len(>l), _pos=f.tell(), endianness(>l)=1, section, len=f.tell()-_pos
 section:    is_dict(b), open(b), num_tags(>l), data(["named_data"]*num_tags)
@@ -126,10 +134,14 @@ class DelayedReadDictionary(collections.Mapping):
                 log.debug("Now reading %s: %s", key, self.read[key])
             else:
                 write_to_file(self.f, stype, write_data)
-                log.debug("Now writing %s: %s", key, v)
-                self.read[key] = v
+                log.debug("Now writing %s: %s", key, write_data)
+                self.read[key] = write_data
             #we have to revert to current pos
             self.f.seek(current_pos)
+
+    def is_pending(self, key):
+        """Return true if key hasn't been processed"""
+        return key in self.delayed and key not in self.read
 
     def __setitem__(self, k, v):
         # for writing, we'll write whenever we have the info
@@ -286,7 +298,10 @@ class ParsedGrammar(object):
         fpos = io_object.f.tell()
         log.debug("Trying options '%s' @ %s", atom, fpos)
         log.debug('parent is %s' % io_object.keys())
-        assert (data is None) != self.writing
+        if not self.writing:
+            assert data is None
+        # if we are writing, data may be none if it's to be specified later
+        # IDeally we should check for this...
         for opt in getattr(self, atom):
             new_io = dottabledict({'parent': io_object})
             new_io.set_file(io_object.f, self.writing)
@@ -377,68 +392,61 @@ class ParsedGrammar(object):
             # variable and check it. When writing we'll write this. The main
             # reason for this is to allow length paramaters:
             # atom: len(>l), ..., len=f.tell()-len.pos
-            # maybe...
-            # this doesn't work - we're reusing our newio_object array in call_opt
-            # even when we fail, I think we should start being stricter about
-            # our dictionaries: we have env, in (if writing) and out
-            # and we shouldn't try to get away with just one. Would also be
-            # nice to standardise on reading returning and writing taking
-            # input only?
-            if name in io_object:
-                # log.debug(io_object.to_std_type())
-                if io_object[name] != expected:
-                    print "'%s'=%s IS NOT %s" % (name, io_object[name], expected)
-                continue
-            # can we _evaluate this?
-            # we evaluate with our current return dictionary as locals.
-            # this allows a part to reference a previous part as if it was a
-            # local note that the evaluation may add more info into locals.
-            # We don't want to return this extra info so we use a copy of ret
-            # this needs to be dottable though
-            log.debug("Formatting %s with %s", expr, "")
-            # using vformat prevents it from indiscriminately getting all
-            # values (as **io_object does)
-            # however, get_string_type_and_evaluate copies io_object anyway
-            # making this probably irrelevant
-            expr = self.formatter.vformat(expr, None, io_object)
-            # expr = expr.format(**io_object)
-            # this will either be tuple or list of tuples
-            types = self.get_string_type_and_evaluate(expr, io_object)
-            # we create a list of object, attr names where we
-            # setattr(object, name, read_io_object) as we read io_object
-            if isinstance(types, list):
-                if self.writing:
-                    log.debug("writing list %s, name=%s len=%s",
-                              data[name], name, len(types))
-                get_func = lambda obj, key: obj[name][key]
-                def set_func(obj, key, val):
-                    obj[name][key] = val
-                keys = range(len(types))
-                io_object[name] = dottabledict(list_like=True)
-                io_object[name].set_file(io_object.f, self.writing)
-                this_io_object = io_object[name]
-            else:
-                # we allow the get_func to return None here is key isn't
-                # present. That way we can write later
-                get_func = lambda obj, key: obj[key]
-                def set_func(obj, key, val):
-                    obj[key] = val
-                keys = [name]
-                types = [types]
-                this_io_object = io_object
-
-            for k, (atom_type, atom) in zip(keys, types):
-                source_data = get_func(data, k) if self.writing else None
-                if atom_type == 'struct':
-                    this_io_object.set_key_here(k, atom, source_data)
+            if name not in io_object:
+                # can we _evaluate this?
+                # we evaluate with our current return dictionary as locals.
+                # this allows a part to reference a previous part as if it was a
+                # local note that the evaluation may add more info into locals.
+                # We don't want to return this extra info so we use a copy of ret
+                # this needs to be dottable though
+                log.debug("Formatting %s with %s", expr, "")
+                # using vformat prevents it from indiscriminately getting all
+                # values (as **io_object does)
+                # however, get_string_type_and_evaluate copies io_object anyway
+                # making this probably irrelevant
+                expr = self.formatter.vformat(expr, None, io_object)
+                # expr = expr.format(**io_object)
+                # this will either be tuple or list of tuples
+                types = self.get_string_type_and_evaluate(expr, io_object)
+                # we create a list of object, attr names where we
+                # setattr(object, name, read_io_object) as we read io_object
+                if isinstance(types, list):
+                    if self.writing:
+                        log.debug("writing list %s, name=%s len=%s",
+                                  data[name], name, len(types))
+                    get_func = lambda obj, key: obj[name][key]
+                    def set_func(obj, key, val):
+                        obj[name][key] = val
+                    keys = range(len(types))
+                    io_object[name] = dottabledict(list_like=True)
+                    io_object[name].set_file(io_object.f, self.writing)
+                    this_io_object = io_object[name]
                 else:
-                    newio_object = self.call_option(atom, io_object, source_data)
-                    if newio_object is None:
-                        return None
-                    this_io_object[k] = newio_object
+                    # we allow the get_func to return None here is key isn't
+                    # present. That way we can write later
+                    get_func = lambda obj, key: obj.get(key)
+                    def set_func(obj, key, val):
+                        obj[key] = val
+                    keys = [name]
+                    types = [types]
+                    this_io_object = io_object
+
+                for k, (atom_type, atom) in zip(keys, types):
+                    source_data = get_func(data, k) if self.writing else None
+                    if atom_type == 'struct':
+                        this_io_object.set_key_here(k, atom, source_data)
+                    else:
+                        newio_object = self.call_option(atom, io_object, source_data)
+                        if newio_object is None:
+                            return None
+                        this_io_object[k] = newio_object
 
             if expected:
-                if io_object[name] != expected:
+                if self.writing and io_object.is_pending(name):
+                    # we set the name to expected
+                    log.debug("Setting %s to %s", name, expected)
+                    io_object[name] = expected
+                elif io_object[name] != expected:
                     log.debug("%s NOT %s but %s!", name, expected, io_object[name])
                     return None  # incompatible
                 else:
@@ -503,13 +511,79 @@ def dm3_to_dictionary(d):
             return ret
         elif type == "dataheader":
             if 'struct_data' in data:
-                return data['struct_data']['data']
+                return tuple(data['struct_data']['data'])
             elif 'array_data' in data:
                 return data['array_data']['array']
             else:
                 return data['data']
 
     return add_to_out('section', d['section'])
+
+def dict_to_dm3(d):
+    """
+    Convert a dictionary (like the one returned from dm3_to_dictionary) into
+    a structure suitable for writing with the dm3 grammar.
+    """
+    # we basically have four mappings:
+    # 1. dict or list to section
+    # 2. simple data to dataheader
+    # 3. array.array to array dataheader
+    # 4. tuple to struct dataheader
+    # Note that arrays of structs in dm3 files currently get translated to
+    # lists of lists, and as such we have no way of handling that. options are
+    # to either convert to a unique standard type (eg tuple of tuples),
+    # or a custom type, add a hint to the parser to parse as
+    # an array of structs, or simply not support it. (although I think it's
+    # needed for complex data types? - in which case we should find a better
+    # way of converting it in dm3_to_dictionary)
+    ret = {}
+    dm_types = {float: 7,
+                int: 3,
+                long: 5,
+                bool: 8}
+
+    def data_to_dataheader(data):
+        ret = dict()
+        if isinstance(data, tuple):
+            # treat as struct
+            ret['dtype'] = 15
+            ret['struct_header'] = dict(num_fields=len(data),
+                                        types=[dm_types[type(t)] for t in data])
+            ret['struct_data'] = dict(data=data)
+        elif isinstance(data, array):
+            ret['dtype'] = 20
+            ret['array_data'] = dict(arraydtype=dm_types[type(data[0])],
+                                     len=len(data),
+                                     array=data)
+        else:
+            # simple type
+            ret['dtype'] = dm_types[type(data)]
+            ret['data'] = data
+        return ret
+
+    def collection_to_section(d):
+        assert isinstance(d, (list, dict))
+        if isinstance(d, dict):
+            is_dict = True
+            items = d.iteritems()
+        else:
+            is_dict=False
+            items = (('', x) for x in d)
+
+        ret = dict(is_dict=is_dict, open=False, num_tags=len(d), data=[])
+        for name, data in items:
+            if isinstance(data, (list, dict)):
+                ret['data'].append(dict(sdtype=20,
+                                     name_length=len(name),
+                                     name=name,
+                                     section=collection_to_section(data)))
+            else:
+                ret['data'].append(dict(sdtype=21,
+                     name_length=len(name),
+                     name=name,
+                     dataheader=data_to_dataheader(data)))
+        return ret
+    return dict(section=collection_to_section(d))
 
 def parse_dm3_header(file):
     g = ParsedGrammar(dm3_grammar, 'header')
@@ -522,13 +596,13 @@ if __name__ == '__main__':
     import os
     import pprint
     logging.basicConfig()
-    # log.setLevel(logging.DEBUG)
+    #log.setLevel(logging.DEBUG)
     g = ParsedGrammar(dm3_grammar, 'header')
-    fname = sys.argv[1] if len(sys.argv) > 1 else "16x2_Ramp_int32.dm3"
+    fname = sys.argv[1] if len(sys.argv) > 1 else "rampint32.dm3"
     print "opening " + fname
 
-    with open(fname, 'rb') as nosingleletter_f:
-        out = g.open(nosingleletter_f)
+    with open(fname, 'rb') as inf:
+        out = g.open(inf)
         # any potential reads have to be done with the file still open
         d = dm3_to_dictionary(out)
         # if we want to write this, we need to make sure all fields have been
@@ -539,14 +613,21 @@ if __name__ == '__main__':
     assert len(out['section'].data[0].dataheader.struct_data.data) == 4
     assert out['section'].data[0].name == 'ApplicationBounds'
 
-    write_also = True
+    write_also = False
     if write_also:
         #log.setLevel(logging.DEBUG)
-        with open("out".join(os.path.splitext(fname)), 'wb') as nosingleletter_f:
-            out2 = g.save(nosingleletter_f, out.to_std_type())
+        with open("out".join(os.path.splitext(fname)), 'wb') as outf:
+            out2 = g.save(outf, out.to_std_type())
     #pprint.pprint(out)
 
     # pprint.pprint(d)
     print "done"
+
+    test_tags = dict_to_dm3(dict(name=45, header=46, dat=dict(
+        bob=3, arg=3.151)))
+    print test_tags
+    with open('test_tags.gtg', 'wb') as outf2:
+        log.setLevel(logging.DEBUG)
+        g.save(outf2, test_tags)
     # would now need to convert to a nicer dict, prefereably one compatible with parse_dm3.
 
