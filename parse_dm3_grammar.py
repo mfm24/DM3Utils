@@ -81,7 +81,7 @@ class DelayedReadDictionary(collections.Mapping):
     A dictionary that stores the file position and data type
     of its elements, and only actually reads them when the item
     is accessed.
-    Optionally can be treated by a list, where iter exposes sorted
+    Optionally can be treated as a list, where iter exposes sorted
     values rather than keys.
     """
     def __init__(self, items=None, list_like=False):
@@ -183,9 +183,7 @@ class DelayedReadDictionary(collections.Mapping):
 
     def to_std_type(self):
         """
-        Convert this and aay child mappables to dicts.
-        Additionally, DelayedReadDictionary with like_list are converted
-        to lists
+        Convert this and any child mappables to dicts or lists.
         """
         if self.list_like:
             ret = []
@@ -204,10 +202,7 @@ class DelayedReadDictionary(collections.Mapping):
         return ret
 
 
-dottabledict_base = DelayedReadDictionary
-#dottabledict_base = dict
-
-class dottabledict(dottabledict_base):
+class dottabledict(DelayedReadDictionary):
     """a dictionary where d[name]==d.name"""
     def __getattr__(self, key):
         return self[key]
