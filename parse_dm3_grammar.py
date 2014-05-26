@@ -49,9 +49,14 @@ array_data: arraydtype(>l), len(>l), _end=f.tell(), array("{len}"+simpledata_{ar
 dm4_grammar = """
 header:     version(>l)=4, len(>Q), endianness(>l)=1, _pos=f.tell(), section, 
             len=f.tell()-_pos, zero_pad_0(>l)=0, zero_pad_1(>l)=0
+
 section:    is_dict(b), open(b), num_tags(>Q), data(["named_data"]*num_tags)
-named_data: sdtype(b)=20, name_length(>H), name({name_length}s), extralen(>Q), section
-named_data: sdtype(b)=21, name_length(>H), name({name_length}s), extralen(>Q), dataheader
+
+named_data: sdtype(b)=20, name_length(>H), name({name_length}s),
+            datalen(>Q), _pos=f.tell(), section, datalen=f.tell()-_pos
+
+named_data: sdtype(b)=21, name_length(>H), name({name_length}s),
+            datalen(>Q), _pos=f.tell(), dataheader, datalen=f.tell()-_pos
 
 # struct-specific data entry
 dataheader: delim(4s)="%%%%", headerlen(>Q),  _pos=f.tell(), dtype(>Q)=15, struct_header, 
