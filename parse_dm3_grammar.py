@@ -5,6 +5,86 @@ import logging
 from array import array
 from file_grammar import ParsedGrammar
 
+general_grammar = """
+header:     version(>l)=__version__, len(__len_type__), endianness(>l)=1, _pos=f.tell(), section, 
+            len=f.tell()-_pos-__header_offset__, zero_pad_0(>l)=0, zero_pad_1(>l)=0
+
+section:    is_dict(b), open(b), num_tags(__len_type__), data(["named_data"]*num_tags)
+
+named_data: sdtype(b)=20, name_length(>H), name({name_length}s), 
+            __named_data_pre__ section __named_data_post__
+
+named_data: sdtype(b)=20, name_length(>H), name({name_length}s), 
+            __named_data_pre__ dataheader __named_data_post__
+
+# struct-specific data entry
+dataheader: delim(4s)="%%%%", headerlen(__len_type__),  _pos=f.tell(),
+            dtype(__len_type__)=15, struct_header, 
+            headerlen=(f.tell()-_pos)/__len_size__, struct_data
+
+# array-specific data entry
+dataheader: delim(4s)="%%%%", headerlen(__len_type__), _pos=f.tell(),
+            dtype(__len_type__)=20, array_data,
+            headerlen=(array_data._end-_pos)/__len_size__
+
+# simple data
+dataheader: delim(4s)="%%%%", headerlen(__len_type__), _pos=f.tell(), 
+            dtype(__len_type__), 
+            headerlen=(f.tell()-_pos)/__len_size__, data(simpledata_{dtype})
+
+simpledata_2 = h
+simpledata_3 = i
+simpledata_4 = H
+simpledata_5 = I
+simpledata_6 = f
+simpledata_7 = d
+simpledata_8 = b
+simpledata_9 = b
+simpledata_10 = b
+simpledata_11 = q
+simpledata_12 = Q
+
+#structs
+struct_header: length(__len_type__)=0, num_fields(__len_type__),
+               types(["struct_dtype"]*num_fields)
+
+struct_data: data([("simpledata_%s" % dtypes.dtype) for dtypes in parent.struct_header.types])
+
+struct_dtype: length(__len_type__)=0, dtype(__len_type__)
+
+array_data: arraydtype(__len_type__)=15, struct_header, len(__len_type__),
+            _end=f.tell(), array(["struct_data"]*len)
+
+#general case:
+array_data: arraydtype(__len_type__), len(__len_type__),
+            _end=f.tell(), array("{len}"+simpledata_{arraydtype})
+"""
+
+dm3_grammer_defs = { 'version': 3,
+                     'len_type': '>l',
+                     'len_size': 4,
+                     'header_offset': 4,
+                     'named_data_pre': '',
+                     'named_data_post': '',
+                     }
+
+dm4_grammer_defs = { 'version': 4,
+                     'len_type': '>Q',
+                     'len_size': 8,
+                     'header_offset': 0,
+                     'named_data_pre': 'datalen(>Q), _pos=f.tell(), ',
+                     'named_data_post': ', datalen=f.tell()-_pos',
+                     }
+
+def replace_map(s, m):
+    for k, v in m.items():
+        s = s.replace('__%s__' % k, str(v))
+    return s
+
+dm3_grammar_2 = replace_map(general_grammar, dm3_grammer_defs)
+dm4_grammar_2 = replace_map(general_grammar, dm4_grammer_defs)
+print dm4_grammar_2
+exit()
 dm3_grammar = """
 header:     version(>l)=3, len(>l), _pos=f.tell(), endianness(>l)=1, section, 
             len=f.tell()-_pos, zero_pad_0(>l)=0, zero_pad_1(>l)=0
