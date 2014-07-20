@@ -7,14 +7,14 @@ from file_grammar import ParsedGrammar
 
 general_grammar = """
 header:     version(>l)=__version__, len(__len_type__), endianness(>l)=1, _pos=f.tell(), section, 
-            len=f.tell()-_pos-__header_offset__, zero_pad_0(>l)=0, zero_pad_1(>l)=0
+            len=f.tell()-_pos+__header_offset__, zero_pad_0(>l)=0, zero_pad_1(>l)=0
 
 section:    is_dict(b), open(b), num_tags(__len_type__), data(["named_data"]*num_tags)
 
 named_data: sdtype(b)=20, name_length(>H), name({name_length}s), 
             __named_data_pre__ section __named_data_post__
 
-named_data: sdtype(b)=20, name_length(>H), name({name_length}s), 
+named_data: sdtype(b)=21, name_length(>H), name({name_length}s), 
             __named_data_pre__ dataheader __named_data_post__
 
 # struct-specific data entry
@@ -213,7 +213,7 @@ if __name__ == '__main__':
     import os
     import pprint
     logging.basicConfig()
-    #log.setLevel(logging.DEBUG)
+    logging.root.setLevel(logging.DEBUG)
     g = ParsedGrammar(dm3_grammar, 'header')
     fname = sys.argv[1] if len(sys.argv) > 1 else "rampint32.dm3"
     print "opening " + fname
