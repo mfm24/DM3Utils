@@ -18,7 +18,7 @@ named_data: sdtype(b)=20, name_length(>H), name({name_length}s),
             __named_data_pre__ dataheader __named_data_post__
 
 # struct-specific data entry
-dataheader: delim(4s)="%%%%", headerlen(__len_type__),  _pos=f.tell(),
+dataheader: delim(4s)="%%%%", headerlen(__len_type__), _pos=f.tell(),
             dtype(__len_type__)=15, struct_header, 
             headerlen=(f.tell()-_pos)/__len_size__, struct_data
 
@@ -60,6 +60,12 @@ array_data: arraydtype(__len_type__), len(__len_type__),
             _end=f.tell(), array("{len}"+simpledata_{arraydtype})
 """
 
+# dm3 vs dm4 differences:
+# version 3 -> 4
+# len_type l -> Q
+# Slight difference in the header size calculation ('header_offset')
+# (I think v3 is including the 'endianness' field and v4 isn't)
+# v4 has size fields for the named_data element
 dm3_grammer_defs = { 'version': 3,
                      'len_type': '>l',
                      'len_size': 4,
@@ -81,96 +87,8 @@ def replace_map(s, m):
         s = s.replace('__%s__' % k, str(v))
     return s
 
-dm3_grammar_2 = replace_map(general_grammar, dm3_grammer_defs)
-dm4_grammar_2 = replace_map(general_grammar, dm4_grammer_defs)
-print dm4_grammar_2
-exit()
-dm3_grammar = """
-header:     version(>l)=3, len(>l), _pos=f.tell(), endianness(>l)=1, section, 
-            len=f.tell()-_pos, zero_pad_0(>l)=0, zero_pad_1(>l)=0
-section:    is_dict(b), open(b), num_tags(>l), data(["named_data"]*num_tags)
-named_data: sdtype(b)=20, name_length(>H), name({name_length}s), section
-named_data: sdtype(b)=21, name_length(>H), name({name_length}s), dataheader
-
-# struct-specific data entry
-dataheader: delim(4s)="%%%%", headerlen(>l),  _pos=f.tell(), dtype(>l)=15, struct_header, 
-            headerlen=(f.tell()-_pos)/4, struct_data
-
-# array-specific data entry
-dataheader: delim(4s)="%%%%", headerlen(>l), _pos=f.tell(), dtype(>l)=20, 
-            array_data, headerlen=(array_data._end-_pos)/4
-
-# simple data
-dataheader: delim(4s)="%%%%", headerlen(>l), _pos=f.tell(),  dtype(>l), 
-            headerlen=(f.tell()-_pos)/4, data(simpledata_{dtype})
-
-simpledata_2 = h
-simpledata_3 = i
-simpledata_4 = H
-simpledata_5 = I
-simpledata_6 = f
-simpledata_7 = d
-simpledata_8 = b
-simpledata_9 = b
-simpledata_10 = b
-simpledata_11 = q
-simpledata_12 = Q
-
-#structs
-struct_header: length(>l)=0, num_fields(>l), types(["struct_dtype"]*num_fields)
-struct_data: data([("simpledata_%s" % dtypes.dtype) for dtypes in parent.struct_header.types])
-struct_dtype: length(>l)=0, dtype(>l)
-
-array_data: arraydtype(>l)=15, struct_header, len(>l), _end=f.tell(), array(["struct_data"]*len)
-#general case:
-array_data: arraydtype(>l), len(>l), _end=f.tell(), array("{len}"+simpledata_{arraydtype})
-"""
-
-dm4_grammar = """
-header:     version(>l)=4, len(>Q), endianness(>l)=1, _pos=f.tell(), section, 
-            len=f.tell()-_pos, zero_pad_0(>l)=0, zero_pad_1(>l)=0
-
-section:    is_dict(b), open(b), num_tags(>Q), data(["named_data"]*num_tags)
-
-named_data: sdtype(b)=20, name_length(>H), name({name_length}s),
-            datalen(>Q), _pos=f.tell(), section, datalen=f.tell()-_pos
-
-named_data: sdtype(b)=21, name_length(>H), name({name_length}s),
-            datalen(>Q), _pos=f.tell(), dataheader, datalen=f.tell()-_pos
-
-# struct-specific data entry
-dataheader: delim(4s)="%%%%", headerlen(>Q),  _pos=f.tell(), dtype(>Q)=15, struct_header, 
-            headerlen=(f.tell()-_pos)/8, struct_data
-
-# array-specific data entry
-dataheader: delim(4s)="%%%%", headerlen(>Q), _pos=f.tell(), dtype(>Q)=20, 
-            array_data, headerlen=(array_data._end-_pos)/8
-
-# simple data
-dataheader: delim(4s)="%%%%", headerlen(>Q), _pos=f.tell(),  dtype(>Q), 
-            headerlen=(f.tell()-_pos)/8, data(simpledata_{dtype})
-
-simpledata_2 = h
-simpledata_3 = i
-simpledata_4 = H
-simpledata_5 = I
-simpledata_6 = f
-simpledata_7 = d
-simpledata_8 = b
-simpledata_9 = b
-simpledata_10 = b
-simpledata_11 = q
-simpledata_12 = Q
-
-#structs
-struct_header: length(>Q)=0, num_fields(>Q), types(["struct_dtype"]*num_fields)
-struct_data: data([("simpledata_%s" % dtypes.dtype) for dtypes in parent.struct_header.types])
-struct_dtype: length(>Q)=0, dtype(>Q)
-
-array_data: arraydtype(>Q)=15, struct_header, len(>Q), _end=f.tell(), array(["struct_data"]*len)
-#general case:
-array_data: arraydtype(>Q), len(>Q), _end=f.tell(), array("{len}"+simpledata_{arraydtype})
-"""
+dm3_grammar = replace_map(general_grammar, dm3_grammer_defs)
+dm4_grammar = replace_map(general_grammar, dm4_grammer_defs)
 
 def dm3_to_dictionary(d):
     """
