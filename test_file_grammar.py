@@ -46,6 +46,11 @@ class FileGrammarTester(unittest.TestCase):
         sin.seek(0)
         parsed = self.g.open(sin)
 
+        self.assertEqual(parsed.to_std_type(), {'atom': {'atom': {'atom': {'len': 0}, 'len': 12, 'string': 'alice & jeff'},
+                                                          'len': 3,
+                                                          'string': 'bob'},
+                                                 'len': 7,
+                                                 'string': 'hithere'})
 
         self.assertEqual(parsed.string, 'hithere')
         self.assertEqual(parsed.len, len('hithere'))
