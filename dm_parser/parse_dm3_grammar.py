@@ -137,7 +137,6 @@ def dict_to_dm3(d):
     # an array of structs, or simply not support it. (although I think it's
     # needed for complex data types? - in which case we should find a better
     # way of converting it in dm3_to_dictionary)
-    ret = {}
     # we convert simple python types to a small subset of DM types
     dm_types = {float: 7,
                 int: 3,
@@ -205,8 +204,26 @@ def dict_to_dm3(d):
 def parse_dm3_header(file):
     g = ParsedGrammar(dm3_grammar, 'header')
     out = g.open(file)
-    d = dm3_to_dictionary(out)
-    return d
+    if out:
+        d = dm3_to_dictionary(out)
+        return d
+
+def parse_dm_header(file, default_mode="dm3"):
+    # We try to parse a file.
+    # if default_mode shoud be dm3 of dm4, indicating the grammar
+    # to try first. If it fails, the other grammar is tried instead
+    tries = [dm3_grammar, dm4_grammar]
+    if default_mode != 'dm3':
+        tries = reversed(tries)
+    startpos = file.tell()
+    for t in tries:
+        file.seek(startpos)
+        g = ParsedGrammar(t, 'header')
+        out = g.open(file)
+        if out is not None:
+            d = dm3_to_dictionary(out)
+            return d
+    raise ValueError("File is neither a dm3 nor dm4 file!")
 
 if __name__ == '__main__':
     import sys
@@ -252,21 +269,10 @@ if __name__ == '__main__':
         print dm3_to_dictionary(in_test_tags)
     # if we want to save an image, need ndarray_to_imagedatadict from
     # dm3_image_utils
-    from dm3_image_utils import ndarray_to_imagedatadict
+    from dm3_image_utils import ndarray_to_dmdict
     import numpy as np
     z=np.random.random((512,512))
     z[10:100, 20:80] = 0.5
     with open('test.dm3', 'wb') as outdm3:
-        image = ndarray_to_imagedatadict(z)
-        ret = {}
-        ret["ImageList"] = [{"ImageData": image}]
-        # I think ImageSource list creates a mapping between ImageSourceIds and Images
-        ret["ImageSourceList"] = [{"ClassName": array('H', "ImageSource:Simple".encode('utf_16_le')), "Id": [0], "ImageRef": 0}]
-        # I think this lists the sources for the DocumentObjectlist. The source number is not
-        # the indxe in the imagelist but is either the index in the ImageSourceList or the Id
-        # from that list. We also need to set the annotation type to identify it as an image
-        ret["DocumentObjectList"] = [{"ImageSource": 0, "AnnotationType": 20}]
-        # finally some display options
-        ret["Image Behavior"] = {"ViewDisplayID": 8}
-        ret["InImageMode"] = 1
+        ret = ndarray_to_dmdict(z)
         g.save(outdm3, dict_to_dm3(ret))

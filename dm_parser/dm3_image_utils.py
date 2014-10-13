@@ -10,14 +10,10 @@
 # There is a seperate DatatType and PixelDepth stored for images different
 # from the tag file datatype. I think these are used more than the tag
 # datratypes in describing the data.
-from parse_dm3 import *
+from parse_dm3_grammar import *
 import numpy as np
+from array import array
 
-structarray_to_np_map = {
-    ('d', 'd'): np.complex128,
-    ('f', 'f'): np.complex64}
-
-np_to_structarray_map = {v: k for k, v in structarray_to_np_map.iteritems()}
 
 # we want to amp any image type to a single np array type
 # but a sinlge np array type could map to more than one dm type.
@@ -54,13 +50,10 @@ def imagedatadict_to_ndarray(imdict):
     """
     arr = imdict['Data']
     im = None
-    if isinstance(arr, array.array):
+    if isinstance(arr, array):
         im = np.asarray(arr, dtype=arr.typecode)
-    elif isinstance(arr, structarray):
-        t = tuple(arr.typecodes)
-        im = np.frombuffer(
-            arr.raw_data,
-            dtype=structarray_to_np_map[t])
+    else:
+        raise NotImplementedError('cannot load complex types yet')
     print "Image has dmimagetype", imdict["DataType"], "numpy type is", im.dtype
     assert dm_image_dtypes[imdict["DataType"]][1] == im.dtype
     assert imdict['PixelDepth'] == im.dtype.itemsize
@@ -78,14 +71,27 @@ def ndarray_to_imagedatadict(nparr):
     ret["DataType"] = dm_type
     ret["PixelDepth"] = nparr.dtype.itemsize
     ret["Dimensions"] = list(nparr.shape[::-1])
-    if nparr.dtype.type in np_to_structarray_map:
-        types = np_to_structarray_map[nparr.dtype.type]
-        ret["Data"] = structarray(types)
-        ret["Data"].raw_data = str(nparr.data)
-    else:
-        ret["Data"] = array.array(nparr.dtype.char, nparr.flatten())
+    ret["Data"] = array(nparr.dtype.char, nparr.flatten())
     return ret
 
+def ndarray_to_dmdict(ndarray):
+    """
+    Create a basic structure needed for a dm file, and add
+    ndaray as th eonly image to it.
+    """
+    image = ndarray_to_imagedatadict(ndarray)
+    ret = {}
+    ret["ImageList"] = [{"ImageData": image}]
+    # I think ImageSource list creates a mapping between ImageSourceIds and Images
+    ret["ImageSourceList"] = [{"ClassName": array('H', "ImageSource:Simple".encode('utf_16_le')), "Id": [0], "ImageRef": 0}]
+    # I think this lists the sources for the DocumentObjectlist. The source number is not
+    # the indxe in the imagelist but is either the index in the ImageSourceList or the Id
+    # from that list. We also need to set the annotation type to identify it as an image
+    ret["DocumentObjectList"] = [{"ImageSource": 0, "AnnotationType": 20}]
+    # finally some display options
+    ret["Image Behavior"] = {"ViewDisplayID": 8}
+    ret["InImageMode"] = 1
+    return ret
 
 def load_image(file):
     """
@@ -101,29 +107,3 @@ def load_image(file):
     img_index = -1
     return imagedatadict_to_ndarray(dmtag['ImageList'][img_index]['ImageData'])
 
-
-def save_image(image, file):
-    """
-    Saves the nparray image to the file-like object (or string) file.
-    If file is a string the file is created and written to
-    """
-    if isinstance(file, str):
-        with open(file, "wb") as f:
-            return save_image(n, f)
-    # we need to create a basic DM tree suitable for an imge
-    # we'll try the minimum: just an image list
-    # doesn't work. Do we need a ImageSourceList too?
-    # and a DocumentObjectList?
-    image = ndarray_to_imagedatadict(image)
-    ret = {}
-    ret["ImageList"] = [{"ImageData": image}]
-    # I think ImageSource list creates a mapping between ImageSourceIds and Images
-    ret["ImageSourceList"] = [{"ClassName": "ImageSource:Simple", "Id": [0], "ImageRef": 0}]
-    # I think this lists the sources for the DocumentObjectlist. The source number is not
-    # the indxe in the imagelist but is either the index in the ImageSourceList or the Id
-    # from that list. We also need to set the annotation type to identify it as an image
-    ret["DocumentObjectList"] = [{"ImageSource": 0, "AnnotationType": 20}]
-    # finally some display options
-    ret["Image Behavior"] = {"ViewDisplayID": 8}
-    ret["InImageMode"] = 1
-    parse_dm_header(file, ret)
