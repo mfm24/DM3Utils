@@ -66,15 +66,20 @@ array_data: arraydtype(__len_type__), len(__len_type__),
 # Slight difference in the header size calculation ('header_offset')
 # (I think v3 is including the 'endianness' field and v4 isn't)
 # v4 has size fields for the named_data element
-dm3_grammer_defs = { 'version': 3,
+dm3_grammar_defs = { 'version': 3,
                      'len_type': '>l',
                      'len_size': 4,
                      'header_offset': 4,
                      'named_data_pre': '',
                      'named_data_post': '',
                      }
+# annoyingly, some dm3 files have a slightly different header_offset
+# don't relly want to support multiple, optional values, so let's just
+# have two slightly different grammars
+dm3_grammar_defs2 = dm3_grammar_defs.copy()
+dm3_grammar_defs2['header_offset'] = 0
 
-dm4_grammer_defs = { 'version': 4,
+dm4_grammar_defs = { 'version': 4,
                      'len_type': '>Q',
                      'len_size': 8,
                      'header_offset': 0,
@@ -87,8 +92,9 @@ def replace_map(s, m):
         s = s.replace('__%s__' % k, str(v))
     return s
 
-dm3_grammar = replace_map(general_grammar, dm3_grammer_defs)
-dm4_grammar = replace_map(general_grammar, dm4_grammer_defs)
+dm3_grammar = replace_map(general_grammar, dm3_grammar_defs)
+dm3_grammar2 = replace_map(general_grammar, dm3_grammar_defs2)
+dm4_grammar = replace_map(general_grammar, dm4_grammar_defs)
 
 def dm3_to_dictionary(d):
     """
@@ -212,7 +218,7 @@ def parse_dm_header(file, default_mode="dm3"):
     # We try to parse a file.
     # if default_mode shoud be dm3 of dm4, indicating the grammar
     # to try first. If it fails, the other grammar is tried instead
-    tries = [dm3_grammar, dm4_grammar]
+    tries = [dm3_grammar, dm3_grammar2, dm4_grammar]
     if default_mode != 'dm3':
         tries = reversed(tries)
     startpos = file.tell()
