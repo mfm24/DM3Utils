@@ -86,6 +86,10 @@ class DM3Loader(object):
         return ['dm3', 'dm4']
 
 class FolderImageSource(object):
+    """
+    A source simply has to expose a next(steps) function that will initially
+    get called with 0.
+    """
     def __init__(self, path, loaders):
         self.path = path
         self.loaders = loaders
@@ -116,23 +120,45 @@ class FolderImageSource(object):
 
 
 
-def show_image(source, limits=None):
-    # copied some from demo/tkinter/guido/imagedraw.py
-    # unfortunately PhotoImage only accepts base64 encoded GIF files
-    # while we can specify a PGM filename. We create a temporary file
-    # as a workaround
-    limits = {}
-    root = Tk()
+class ImageCanvas(Canvas):
+    def __init__(self, source, limits=None, root=None):
+        self.source = source
+        if not root:
+            root = Tk()
+        self.root = root
+        self.photoimage = self.tkimage = None
+        self.histimage = None
+        self.arr = None
+        Canvas.__init__(self, self.root, width=1, height=1)
+        self.pack()
+        self.limits = limits or {}
+        self.root.bind_all("<Left>", lambda e: self.next_image(1))
+        self.root.bind_all("<Right>", lambda e: self.next_image(-1))
+        self.root.bind_all("<Escape>", lambda e: quit())
+        if has_pil:
+            menubar = Menu(self.root)
+            file_menu = Menu(menubar, tearoff=0)
+            file_menu.add_command(label="Save As...", command=self.save_im)
+            menubar.add_cascade(label="File", menu=file_menu)
+        self.root.config(menu=menubar)
+        self.next_image(0)
+        root.mainloop()
+        # copied some from demo/tkinter/guido/imagedraw.py
+        # unfortunately PhotoImage only accepts base64 encoded GIF files
+        # while we can specify a PGM filename. We create a temporary file
+        # as a workaround
 
-    def clip_im(nparr):
+    def clip_im(self, nparr):
         h, w = nparr.shape
-        scale = 255.0 / (limits['high'] - limits['low'])
-        off = limits['low']
+        lo, hi = self.limits
+        scale = 255.0 / (hi - lo)
+        off = lo
         if use_numpy_arrays:
             return np.clip(scale * (nparr - off), 0, 255).astype(np.uint8)
         else:
             return map(lambda x: int(scale*(x-off)), nparr)
 
+    @staticmethod
     def make_photoimageim(nparr):
         h, w = nparr.shape
         f, fname = mkstemp()
@@ -145,58 +171,41 @@ def show_image(source, limits=None):
             os.remove(fname)
         return img
 
-    def save_im():
+    def save_im(self):
         """save newim to user specified file"""
         opts = {'defaultextension': '.png',
                 'filetypes': [('all files', '.*'), ('PNG Files', '.png')],
                 }
         f = tkFileDialog.asksaveasfilename(**opts)
         if f:
-            PIL.Image.fromarray(canv._npimage).save(f)
+            PIL.Image.fromarray(self.clip_im(self.arr)).save(f)
 
-    canv = Canvas(root, width=1, height=1)
-    canv._npimage = canv._photoimage = canv._tkimage = None
-    canv._histimage = None
-    canv.pack()
-
-    def new_limits(low, high):
-        limits['low'] = low
-        limits['high'] = high
-        if canv._tkimage is not None:
-            canv.delete(canv._tkimage)
-        canv._npimage = clip_im(show_image.arr)
-        canv._photoimage = make_photoimageim(canv._npimage)
-        canv._tkimage = canv.create_image(0, 1, anchor=NW,
-                                          image=canv._photoimage)
-        if canv._histimage:
-            canv._histimage.destroy()
-        canv._histimage = create_histogram(show_image.arr,
-                                           root, 128, limits, new_limits)
-        canv._histimage.place(anchor=NW)
+    def new_limits(self, new_limits):
+        self.limits=new_limits
+        if self.tkimage is not None:
+            self.delete(self.tkimage)
+        npimage = self.clip_im(self.arr)
+        # we need to keep a reference to the photoimage
+        self.photoimage = self.make_photoimageim(npimage)
+        self.tkimage = self.create_image(0, 1, anchor=NW,
+                                          image=self.photoimage)
+        if self.histimage:
+            self.histimage.destroy()
+        self.histimage = create_histogram(self.arr,
+                                           self.root, 128, self.limits,
+                                           self.new_limits)
+        self.histimage.place(anchor=NW)
 
     # we look for arrow keys..
-    def next_image(step):
-        im, title = source.next(step)
-        show_image.arr = im
-        root.wm_title(title)
-        h, w = show_image.arr.shape
-        canv.config(width=w, height=h + 1)  # resize existing canvas
-        limits = dict(low=immin(show_image.arr), high=immax(show_image.arr))
-        new_limits(limits['low'], limits['high'])
+    def next_image(self, step):
+        im, title = self.source.next(step)
+        self.arr = im
+        self.root.wm_title(title)
+        h, w = self.arr.shape
+        self.config(width=w, height=h + 1)  # resize existing canvas
+        limits = (immin(self.arr), immax(self.arr))
+        self.new_limits(limits)
 
-    root.bind_all("<Left>", lambda e: next_image(1))
-    root.bind_all("<Right>", lambda e: next_image(-1))
-    root.bind_all("<Escape>", lambda e: quit())
-
-    if has_pil:
-        menubar = Menu(root)
-        file_menu = Menu(menubar, tearoff=0)
-        file_menu.add_command(label="Save As...", command=save_im)
-        menubar.add_cascade(label="File", menu=file_menu)
-        root.config(menu=menubar)
-
-    next_image(0)
-    root.mainloop()
 
 def create_histogram(im, tkroot, size, limits, rangechangefunc):
 
@@ -207,7 +216,7 @@ def create_histogram(im, tkroot, size, limits, rangechangefunc):
         """
         hist_width, hist_height = out_pim.width(), out_pim.height()
         vals, bins = hist_func(im, bins=hist_width,
-                               range=(limits["low"], limits['high']))
+                               range=limits)
         # we now create the image
         # we show 0 to vals.max() in hist_height steps
         pics = ""
@@ -243,12 +252,12 @@ def create_histogram(im, tkroot, size, limits, rangechangefunc):
             if clickstuff["start"] != e.x:
                 low = 1.0 * min(e.x, clickstuff["start"]) / size
                 high = 1.0 * max(e.x, clickstuff["start"]) / size
-                full_range = limits['high'] - limits['low']
-                rangechangefunc(limits['low'] + low * full_range,
-                                limits['low'] + high * full_range)
+                full_range = limits[1] - limits[0]
+                rangechangefunc((limits[0] + low * full_range,
+                                limits[0] + high * full_range))
 
     def reset_click(e):
-        rangechangefunc(immin(im), immax(im))
+        rangechangefunc((immin(im), immax(im)))
 
     canv_hist.bind("<Button-1>", start_click)
     canv_hist.bind("<B1-Motion>", move_click)
@@ -261,8 +270,7 @@ def create_histogram(im, tkroot, size, limits, rangechangefunc):
 def show_dm_image_script():
     # setup.py script entry for showing images
     import sys
-    show_image(sys.argv[1])
-
+    ImageCanvas(FolderImageSource(sys.argv[1], [DM3Loader()]))
 
 if __name__ == '__main__':
     import sys
@@ -283,7 +291,7 @@ if __name__ == '__main__':
             op = parse_dm_header(f)
         if action == "showimage":
             # arr = imagedatadict_to_ndarray(op['ImageList'][-1]['ImageData'])
-            show_image(FolderImageSource(file, [DM3Loader()]))
+            ImageCanvas(FolderImageSource(file, [DM3Loader()]))
         elif action == "listdispersions":
             for kvlist in op["PrimaryList"]:
                 print "Energy %lf has dispersions:" % kvlist['Prism']['Energy']
