@@ -85,6 +85,14 @@ class DM3Loader(object):
     def extensions(self):
         return ['dm3', 'dm4']
 
+class PILLoader(object):
+    def __call__(self, path):
+        return np.asarray(PIL.Image.open(path))
+
+    @property
+    def extensions(self):
+        return ['tif', 'tiff', 'png', 'jpeg', 'jpg']
+
 class FolderImageSource(object):
     """
     A source simply has to expose a next(steps) function that will initially
@@ -125,7 +133,9 @@ class ImageCanvas(Canvas):
         self.source = source
         if not root:
             root = Tk()
-            self.root.bind_all("<Escape>", lambda e: quit())
+            root.bind_all("<Escape>", lambda e: quit())
+            root.bind_all("<Left>", lambda e: self.next_image(1))
+            root.bind_all("<Right>", lambda e: self.next_image(-1))
         self.root = root
         self.photoimage = self.tkimage = None
         self.histimage = None
@@ -133,8 +143,7 @@ class ImageCanvas(Canvas):
         Canvas.__init__(self, self.root, width=1, height=1)
         self.pack()
         self.limits = limits or {}
-        self.bind("<Left>", lambda e: self.next_image(1))
-        self.bind("<Right>", lambda e: self.next_image(-1))
+
 
         if has_pil:
             menubar = Menu(self.root)
@@ -288,30 +297,31 @@ if __name__ == '__main__':
                "'listdispersions', 'countdispersions', 'imageinfo'")
     if file:
         print file, action
-        with open(file, "rb") as f:
-            op = parse_dm_header(f)
         if action == "showimage":
             # arr = imagedatadict_to_ndarray(op['ImageList'][-1]['ImageData'])
-            ImageCanvas(FolderImageSource(file, [DM3Loader()]))
-        elif action == "listdispersions":
-            for kvlist in op["PrimaryList"]:
-                print "Energy %lf has dispersions:" % kvlist['Prism']['Energy']
-                for disp in kvlist["DispersionList"]["List"]:
-                    print "\t%lf" % disp['Dispersion']
-                print
-        elif action == "countdispersions":
-            for kvlist in op["PrimaryList"]:
-                print "Energy %lf has %d dispersions" % (
-                    kvlist['Prism']['Energy'],
-                    len(kvlist["DispersionList"]["List"]))
-        elif action == "imageinfo":
-            for i, image in enumerate(op["ImageList"]):
-                print ("Image %d: %s,"
-                       " PixelDepth: %d,"
-                       " DataType: %d "
-                       "(converted type %s)") % (
-                    i, image["ImageData"]["Dimensions"],
-                    image["ImageData"]["PixelDepth"],
-                    image["ImageData"]["DataType"],
-                    type(image["ImageData"]["Data"])
-                    )
+            ImageCanvas(FolderImageSource(file, [DM3Loader(), PILLoader()]))
+        else:
+            with open(file, "rb") as f:
+                op = parse_dm_header(f)
+            if action == "listdispersions":
+                for kvlist in op["PrimaryList"]:
+                    print "Energy %lf has dispersions:" % kvlist['Prism']['Energy']
+                    for disp in kvlist["DispersionList"]["List"]:
+                        print "\t%lf" % disp['Dispersion']
+                    print
+            elif action == "countdispersions":
+                for kvlist in op["PrimaryList"]:
+                    print "Energy %lf has %d dispersions" % (
+                        kvlist['Prism']['Energy'],
+                        len(kvlist["DispersionList"]["List"]))
+            elif action == "imageinfo":
+                for i, image in enumerate(op["ImageList"]):
+                    print ("Image %d: %s,"
+                           " PixelDepth: %d,"
+                           " DataType: %d "
+                           "(converted type %s)") % (
+                        i, image["ImageData"]["Dimensions"],
+                        image["ImageData"]["PixelDepth"],
+                        image["ImageData"]["DataType"],
+                        type(image["ImageData"]["Data"])
+                        )
