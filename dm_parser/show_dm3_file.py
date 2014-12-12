@@ -69,16 +69,60 @@ def get_image(dmtag, num):
 from Tkinter import *
 import tkFileDialog
 
+class DM3Loader(object):
+    """
+    A loader should be calable with a path and return an nd
+    image. It should have a extensions property that returns a list of
+    acceptable extensions for the file
+    """
+    def __call__(self, path):
+        with open(path, "rb") as f:
+            op = parse_dm_header(f)
+        return imagedatadict_to_ndarray(
+            op['ImageList'][-1]['ImageData'])
 
-def show_image(filepath, limits=None):
+    @property
+    def extensions(self):
+        return ['dm3', 'dm4']
+
+class FolderImageSource(object):
+    def __init__(self, path, loaders):
+        self.path = path
+        self.loaders = loaders
+
+    @staticmethod
+    def get_extension(path):
+        return os.path.splitext(path)[1][1:]
+
+    def get_image_and_title(self):
+        ext = self.get_extension(self.path)
+        for l in self.loaders:
+            if ext in l.extensions:
+                return l(self.path), os.path.basename(self.path)
+
+    def next(self, delta):
+        if delta != 0:
+            path, name = os.path.split(self.path)
+            # if path is blank use '.'
+            path = path or "."
+            all_exts = [x for loader in self.loaders for x in loader.extensions]
+            names = [x for x in os.listdir(path)
+                     if self.get_extension(x) in all_exts]
+            print "New image from ", self.path,
+            newname = names[(names.index(name) + delta) % len(names)]
+            self.path = os.path.join(path, newname)
+            print "to", self.path
+        return self.get_image_and_title()
+
+
+
+def show_image(source, limits=None):
     # copied some from demo/tkinter/guido/imagedraw.py
     # unfortunately PhotoImage only accepts base64 encoded GIF files
     # while we can specify a PGM filename. We create a temporary file
     # as a workaround
-    show_image.filepath = filepath
     limits = {}
     root = Tk()
-    root.wm_title(os.path.split(filepath)[1])
 
     def clip_im(nparr):
         h, w = nparr.shape
@@ -132,22 +176,9 @@ def show_image(filepath, limits=None):
 
     # we look for arrow keys..
     def next_image(step):
-        if step != 0:
-            path, name = os.path.split(show_image.filepath)
-            # if path is blank use '.'
-            path = path or "."
-            names = [x for x in os.listdir(path)
-                     if os.path.splitext(x)[1] in [".dm3", ".dm4"]]
-            print "New image from ", show_image.filepath,
-            newname = names[(names.index(name) + step) % len(names)]
-            show_image.filepath = os.path.join(path, newname)
-            root.wm_title(newname)
-            print "to", show_image.filepath
-        # reload the image, could be nicer here...
-        with open(show_image.filepath, "rb") as f:
-            op = parse_dm_header(f)
-        show_image.arr = imagedatadict_to_ndarray(
-            op['ImageList'][-1]['ImageData'])
+        im, title = source.next(step)
+        show_image.arr = im
+        root.wm_title(title)
         h, w = show_image.arr.shape
         canv.config(width=w, height=h + 1)  # resize existing canvas
         limits = dict(low=immin(show_image.arr), high=immax(show_image.arr))
@@ -252,7 +283,7 @@ if __name__ == '__main__':
             op = parse_dm_header(f)
         if action == "showimage":
             # arr = imagedatadict_to_ndarray(op['ImageList'][-1]['ImageData'])
-            show_image(file)
+            show_image(FolderImageSource(file, [DM3Loader()]))
         elif action == "listdispersions":
             for kvlist in op["PrimaryList"]:
                 print "Energy %lf has dispersions:" % kvlist['Prism']['Energy']
