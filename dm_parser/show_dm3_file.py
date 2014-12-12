@@ -125,6 +125,7 @@ class ImageCanvas(Canvas):
         self.source = source
         if not root:
             root = Tk()
+            self.root.bind_all("<Escape>", lambda e: quit())
         self.root = root
         self.photoimage = self.tkimage = None
         self.histimage = None
@@ -132,9 +133,9 @@ class ImageCanvas(Canvas):
         Canvas.__init__(self, self.root, width=1, height=1)
         self.pack()
         self.limits = limits or {}
-        self.root.bind_all("<Left>", lambda e: self.next_image(1))
-        self.root.bind_all("<Right>", lambda e: self.next_image(-1))
-        self.root.bind_all("<Escape>", lambda e: quit())
+        self.bind("<Left>", lambda e: self.next_image(1))
+        self.bind("<Right>", lambda e: self.next_image(-1))
+
         if has_pil:
             menubar = Menu(self.root)
             file_menu = Menu(menubar, tearoff=0)
