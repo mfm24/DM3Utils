@@ -1,9 +1,10 @@
+from __future__ import absolute_import, print_function, division
 import os
 from tempfile import mkstemp
 
-from parse_dm3_grammar import parse_dm_header
+from .parse_dm3_grammar import parse_dm_header
 
-from dm3_image_utils import imagedatadict_to_ndarray
+from .dm3_image_utils import imagedatadict_to_ndarray
 import array
 # mfm 2014-02-04 would like ability to flip through using arrow keys
 # we had this flag in ParseDM3File, but it's been removed.
@@ -120,10 +121,10 @@ class FolderImageSource(object):
             all_exts = [x for loader in self.loaders for x in loader.extensions]
             names = [x for x in os.listdir(path)
                      if self.get_extension(x) in all_exts]
-            print "New image from ", self.path,
+            print("New image from ", self.path)
             newname = names[(names.index(name) + delta) % len(names)]
             self.path = os.path.join(path, newname)
-            print "to", self.path
+            print("to", self.path)
         return self.get_image_and_title()
 
 
@@ -144,7 +145,7 @@ class ImageCanvas(Canvas):
         self.pack()
         self.limits = limits or {}
 
-
+        menubar = None
         if has_pil:
             menubar = Menu(self.root)
             file_menu = Menu(menubar, tearoff=0)
@@ -296,7 +297,7 @@ if __name__ == '__main__':
                " Action can be one of 'showimage', "
                "'listdispersions', 'countdispersions', 'imageinfo'")
     if file:
-        print file, action
+        print(file, action)
         if action == "showimage":
             # arr = imagedatadict_to_ndarray(op['ImageList'][-1]['ImageData'])
             ImageCanvas(FolderImageSource(file, [DM3Loader(), PILLoader()]))
@@ -305,18 +306,18 @@ if __name__ == '__main__':
                 op = parse_dm_header(f)
             if action == "listdispersions":
                 for kvlist in op["PrimaryList"]:
-                    print "Energy %lf has dispersions:" % kvlist['Prism']['Energy']
+                    print("Energy %lf has dispersions:" % kvlist['Prism']['Energy'])
                     for disp in kvlist["DispersionList"]["List"]:
-                        print "\t%lf" % disp['Dispersion']
-                    print
+                        print("\t%lf" % disp['Dispersion'])
+                    print()
             elif action == "countdispersions":
                 for kvlist in op["PrimaryList"]:
-                    print "Energy %lf has %d dispersions" % (
+                    print("Energy %lf has %d dispersions" % (
                         kvlist['Prism']['Energy'],
-                        len(kvlist["DispersionList"]["List"]))
+                        len(kvlist["DispersionList"]["List"])))
             elif action == "imageinfo":
                 for i, image in enumerate(op["ImageList"]):
-                    print ("Image %d: %s,"
+                    print(("Image %d: %s,"
                            " PixelDepth: %d,"
                            " DataType: %d "
                            "(converted type %s)") % (
@@ -324,4 +325,4 @@ if __name__ == '__main__':
                         image["ImageData"]["PixelDepth"],
                         image["ImageData"]["DataType"],
                         type(image["ImageData"]["Data"])
-                        )
+                        ))

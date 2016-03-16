@@ -4,8 +4,8 @@ Created on Sun May 19 07:58:10 2013
 
 @author: matt
 """
-
-from parse_dm3_grammar import dm3_grammar, dict_to_dm3, dm3_to_dictionary
+from __future__ import absolute_import, print_function, division
+from .parse_dm3_grammar import dm3_grammar, dict_to_dm3, dm3_to_dictionary
 from file_grammar import ParsedGrammar
 import unittest
 import StringIO

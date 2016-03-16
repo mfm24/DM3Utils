@@ -10,7 +10,8 @@
 # There is a seperate DatatType and PixelDepth stored for images different
 # from the tag file datatype. I think these are used more than the tag
 # datratypes in describing the data.
-from parse_dm3_grammar import *
+from __future__ import absolute_import, print_function, division
+from .parse_dm3_grammar import *
 import numpy as np
 from array import array
 
@@ -54,7 +55,7 @@ def imagedatadict_to_ndarray(imdict):
         im = np.asarray(arr, dtype=arr.typecode)
     else:
         raise NotImplementedError('cannot load complex types yet')
-    print "Image has dmimagetype", imdict["DataType"], "numpy type is", im.dtype
+    print("Image has dmimagetype", imdict["DataType"], "numpy type is", im.dtype)
     assert dm_image_dtypes[imdict["DataType"]][1] == im.dtype
     assert imdict['PixelDepth'] == im.dtype.itemsize
     return im.reshape(imdict['Dimensions'][::-1])

@@ -1,6 +1,7 @@
 # parse_dm3_grammar.py
 # contains a gramar definition for a dm3 files and helper functions for converting
 # to and from dictionaries, and extracting images
+from __future__ import absolute_import, print_function, division
 import logging
 from array import array
 from file_grammar import ParsedGrammar
@@ -239,7 +240,7 @@ if __name__ == '__main__':
     logging.root.setLevel(logging.DEBUG)
     g = ParsedGrammar(dm3_grammar, 'header')
     fname = sys.argv[1] if len(sys.argv) > 1 else "rampint32.dm3"
-    print "opening " + fname
+    print("opening " + fname)
 
     with open(fname, 'rb') as inf:
         out = g.open(inf)
@@ -249,7 +250,7 @@ if __name__ == '__main__':
         # read. Note we don't have to read everything if we just want the image
         # data
         out.to_std_type()
-    print "Finished reading!"
+    print("Finished reading!")
     assert len(out['section'].data[0].dataheader.struct_data.data) == 4
     assert out['section'].data[0].name == 'ApplicationBounds'
 
@@ -261,18 +262,18 @@ if __name__ == '__main__':
     #pprint.pprint(out)
 
     # pprint.pprint(d)
-    print "done"
+    print("done")
 
     test_tags = dict_to_dm3(dict(name=45, header=46, dat=dict(
         bob=3, arg=3.151)))
-    print test_tags
+    print(test_tags)
     with open('test_tags.gtg', 'wb') as outf2:
         #log.setLevel(logging.DEBUG)
         g.save(outf2, test_tags)
 
     with open('test_tags.gtg', 'rb') as inf2:
         in_test_tags = g.open(inf2)
-        print dm3_to_dictionary(in_test_tags)
+        print(dm3_to_dictionary(in_test_tags))
     # if we want to save an image, need ndarray_to_imagedatadict from
     # dm3_image_utils
     from dm3_image_utils import ndarray_to_dmdict
